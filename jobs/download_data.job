@@ -1,12 +1,11 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu
-#SBATCH --gpus=1
+#SBATCH --partition=cpu
 #SBATCH --job-name=DownloadDatasets
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --time=01:00:00
-#SBATCH --output=job_logs/slurm_output_DownloadData_%A.out
+#SBATCH --output=$HOME/job_logs/slurm_output_DownloadData_%A.out
 
 # Create directory, if it does not exist
 if [ ! -d $HOME/data/ ]
@@ -22,7 +21,7 @@ if [ ! -f $HOME/data/360_v2.zip ]
 then
     echo "Downloading mip-NeRF 360 dataset"
     wget http://storage.googleapis.com/gresearch/refraw360/360_v2.zip --no-verbose
-    unzip -qn 360_vw.zip
+    unzip -qn 360_v2.zip
 fi
 
 if [ ! -f $HOME/data/360_extra_scenes.zip ]
