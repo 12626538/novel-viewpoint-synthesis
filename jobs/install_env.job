@@ -1,0 +1,38 @@
+#!/bin/bash
+
+#SBATCH --partition=staging
+#SBATCH --job-name=InstallEnvironment
+#SBATCH --ntasks=1
+#SBATCH --time=01:00:00
+#SBATCH --output=job_logs/slurm_output_InstallEnv_%A.out
+
+# Set up conda
+module purge;
+module load 2022;
+module load Anaconda3/2022.05;
+
+# Create directory, if it does not exist
+if [ ! -d $HOME/novel-viewpoint-synthesis/ ]
+then
+    echo "Repository does not exist, cloning...";
+    cd $HOME;
+    git clone https://github.com/12626538/novel-viewpoint-synthesis.git;
+fi
+
+# Make sure we're in the right directory and pull changes
+cd $HOME/novel-viewpoint-synthesis/;
+git pull;
+
+# Check if the environment exists
+if conda info --envs | grep -q gaussian_splatting;
+then
+    echo "Environment already installed.";
+else
+    # Create enviornment
+    echo "Creating environment...";
+    conda env create --file environment.yml;
+fi
+
+source activate gaussian_splatting;
+
+echo "Success!";
