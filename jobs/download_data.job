@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --partition=thin
+#SBATCH --partition=rome
 #SBATCH --job-name=DownloadDatasets
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
