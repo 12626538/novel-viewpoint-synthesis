@@ -9,12 +9,12 @@
 #SBATCH --output=$HOME/job_logs/slurm_output_GuassSplatt_%A.out
 
 # Go to Gauss Splatt directory
-if [ ! -d $HOME/gaussian_splatting/ ]
+if [ ! -d $HOME/gaussian-splatting/ ]
 then
     cd $HOME
     git clone https://github.com/graphdeco-inria/gaussian-splatting.git
 fi
-cd $HOME/gaussian_splatting/
+cd $HOME/gaussian-splatting/
 
 # Set up env
 module purge;
