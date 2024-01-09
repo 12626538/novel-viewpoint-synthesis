@@ -1,0 +1,54 @@
+#!/bin/bash
+
+#SBATCH --partition=thin
+#SBATCH --job-name=DownloadDatasets
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=01:00:00
+#SBATCH --output=job_logs/slurm_output_DownloadData_%A.out
+
+# Create directory, if it does not exist
+if [ ! -d $HOME/data/ ]
+then
+    mkdir $HOME/data/
+fi
+
+# Make sure we're in the right directory
+cd $HOME/data/;
+
+# Mip-NeRF 360 dataset
+if [ ! -f $HOME/data/360_v2.zip ]
+then
+    echo "Downloading mip-NeRF 360 dataset"
+    wget http://storage.googleapis.com/gresearch/refraw360/360_v2.zip --no-verbose
+    unzip -qn 360_vw.zip
+fi
+
+if [ ! -f $HOME/data/360_extra_scenes.zip ]
+then
+    echo "Downloading mip-NeRF 360 dataset - extra scences"
+    wget http://storage.googleapis.com/gresearch/refraw360/360_extra_scenes.zip --no-verbose
+    unzip -qn 360_extra_scenes.zip
+fi
+
+# Tanks&Temples, Deep Blending dataset
+if [ ! -f $HOME/data/tandt_db.zip ]
+then
+    echo "Downloading Tanks&Temples, Deep Blending datasets"
+    wget https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/input/tandt_db.zip --no-verbose
+    unzip -qn tandt_db.zip
+fi
+
+# NeRF dataset
+if [ ! -d $HOME/data/nerf ]
+then
+    echo "IMPORTANT! Original NeRF dataset is not downloaded. This has to be done manually, the link for which is here:"
+    echo "https://drive.google.com/drive/folders/128yBriW1IG_3NJ5Rp7APSTZsJqdJdfc1"
+fi
+
+# DeepVoxels dataset
+if [ ! -d $HOME/data/deepvoxels ]
+then
+    echo "IMPORTANT! DeepVoxels dataset is not downloaded. This has to be done manually, the link for which is here:"
+    echo "https://drive.google.com/drive/folders/1ScsRlnzy9Bd_n-xw83SP-0t548v63mPH"
+fi
