@@ -1,17 +1,16 @@
-name: gaussian_splatting
+name: gsplat
 channels:
   - pytorch
   - conda-forge
   - defaults
+  - nvidia
 dependencies:
-  - cudatoolkit=11.6
-  - plyfile=0.8.1
-  - python=3.7.13
-  - pip=22.3.1
-  - pytorch=1.12.1
-  - torchaudio=0.12.1
-  - torchvision=0.13.1
+  - plyfile=1.0.3
+  - python=3.9.18
+  - pip=23.3.1
+  - pytorch-cuda=11.6
+  - torchaudio=0.13.1
+  - torchvision=0.14.1
   - tqdm
   - pip:
-    - submodules/diff-gaussian-rasterization
-    - submodules/simple-knn
+    - submodules/gsplat
