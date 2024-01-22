@@ -27,7 +27,7 @@ cd $HOME/novel-viewpoint-synthesis/;
 git pull;
 
 # Check if the environment exists
-if conda info --envs | grep -q gaussian_splatting;
+if conda info --envs | grep -q gsplat;
 then
     echo "Environment already installed.";
 else
@@ -36,6 +36,6 @@ else
     conda env create --file environment.yml;
 fi
 
-source activate gaussian_splatting;
+source activate gsplat;
 
 echo "Success!";
