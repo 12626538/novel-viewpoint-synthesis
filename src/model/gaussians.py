@@ -2,44 +2,79 @@ import gsplat
 import math
 
 import torch
+from torch import nn
+
 from ..utils.camera import Camera
+from ..utils.colmap_utils import read_points3D
 
 class Gaussians:
     BLOCK_X, BLOCK_Y = 16, 16
 
+    @classmethod
+    def from_colmap(
+        cls,
+        path_to_points3D_file:str,
+        device='cuda:0',
+    ) -> 'Gaussians':
+
+        means, colors = read_points3D(path_to_points3D_file)
+        means = torch.from_numpy(means).to(device=device)
+        colors = torch.from_numpy(colors).to(device=device)
+
+        num_points = means.shape[0]
+
+        return Gaussians(
+            num_points=num_points,
+            device=device,
+            means=means,
+            colors=colors,
+        )
+
     def __init__(
-            self,
-            device,
-            num_points=100_000,
-            bd=10,
-        ):
+        self,
+        num_points=100_000,
+        scene_size=10,
+        device='cuda:0',
+        means=None,
+        scales=None,
+        quats=None,
+        colors=None,
+        opacities=None,
+    ):
         self.num_points = num_points
         self.device = device
 
-        self.means = bd * 2 *torch.rand(self.num_points, 3, device=self.device) - bd
-        self.scales = torch.rand(self.num_points, 3, device=self.device) / 4.
-        self.rgbs = torch.rand(self.num_points, 3, device=self.device)
+        if means is None:
+            means = scene_size * 2 *torch.rand(self.num_points, 3, device=self.device) - scene_size
 
-        u = torch.rand(self.num_points, 1, device=self.device)
-        v = torch.rand(self.num_points, 1, device=self.device)
-        w = torch.rand(self.num_points, 1, device=self.device)
+        if scales is None:
+            scales = torch.rand(self.num_points, 3, device=self.device) / 4.
 
-        self.quats = torch.cat(
-            [
-                torch.sqrt(1.0 - u) * torch.sin(2.0 * math.pi * v),
-                torch.sqrt(1.0 - u) * torch.cos(2.0 * math.pi * v),
-                torch.sqrt(u) * torch.sin(2.0 * math.pi * w),
-                torch.sqrt(u) * torch.cos(2.0 * math.pi * w),
-            ],
-            -1,
-        )
-        self.opacities = torch.ones((self.num_points, 1), device=self.device)/2.
+        if quats is None:
+            u = torch.rand(self.num_points, 1, device=self.device)
+            v = torch.rand(self.num_points, 1, device=self.device)
+            w = torch.rand(self.num_points, 1, device=self.device)
+            quats = torch.cat(
+                [
+                    torch.sqrt(1.0 - u) * torch.sin(2.0 * math.pi * v),
+                    torch.sqrt(1.0 - u) * torch.cos(2.0 * math.pi * v),
+                    torch.sqrt(u) * torch.sin(2.0 * math.pi * w),
+                    torch.sqrt(u) * torch.cos(2.0 * math.pi * w),
+                ],
+                -1,
+            )
 
-        self.means.requires_grad = True
-        self.scales.requires_grad = True
-        self.quats.requires_grad = True
-        self.rgbs.requires_grad = True
-        self.opacities.requires_grad = True
+        if colors is None:
+            colors = torch.rand(self.num_points, 3, device=self.device)
+
+        if opacities is None:
+            opacities = torch.ones((self.num_points, 1), device=self.device)/2.
+
+        self.means = nn.Parameter(means)
+        self.scales = nn.Parameter(scales)
+        self.quats = nn.Parameter(quats)
+        self.colors = nn.Parameter(colors)
+        self.opacities = nn.Parameter(opacities)
 
     def render(
             self,
@@ -60,7 +95,7 @@ class Gaussians:
 
         Returns
         - `out_img:torch.Tensor` - Generated image, shape `H,W,C` where `C` is
-        determined by `Gaussians.rgbs` shape
+        equal to `Gaussians.rgbs.shape[1]`
         """
 
         # Set up number of tiles in X,Y,Z direction
@@ -98,7 +133,7 @@ class Gaussians:
             radii=radii,
             conics=conics,
             num_tiles_hit=num_tiles_hit,
-            colors=torch.sigmoid(self.rgbs),
+            colors=torch.sigmoid(self.colors),
             opacity=torch.sigmoid(self.opacities),
             img_height=camera.H,
             img_width=camera.W,

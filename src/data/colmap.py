@@ -38,13 +38,14 @@ class ColmapDataSet:
         cameras = read_cameras( os.path.join(data_folder, 'cameras.txt') )
         images = read_images( os.path.join(data_folder, 'images.txt') )
 
+        print("Parsing cameras and images...")
         self.cameras:list[Camera] = []
         for image in images:
             camera = cameras[image['camera_id']]
 
             self.cameras.append(Camera(
                 gt_image=image_path_to_tensor( os.path.join(root_dir, img_folder, image['name']) ),
-                R=qvec2rotmat(image['qvec'], device=device),
+                R=qvec2rotmat(image['qvec']),
                 t=image['tvec'],
                 fovx=focal2fov(camera['fx'], camera['width']),
                 fovy=focal2fov(camera['fy'], camera['height']),
@@ -68,9 +69,8 @@ class ColmapDataSet:
 
 if __name__ == '__main__':
     db = ColmapDataSet(
-        '/media/jip/T7/thesis/code/data/3du_data_2/',
+        '/home/jip/data1/3du_data_2/',
         device='cuda:0' if torch.cuda.is_available() else 'cpu'
     )
 
-    for cam in db:
-        print(cam)
+    print(f"Found {len(db)} cameras")

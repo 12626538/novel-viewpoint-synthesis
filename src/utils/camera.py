@@ -6,9 +6,9 @@ class Camera:
     uid=0
     def __init__(
         self,
-        gt_image:torch.tensor, # Ground truth, shape HxWxC
-        R:torch.tensor, # World2View rotation matrix, shape 3x3
-        t:torch.tensor, # World2View translation vector, shape 3
+        gt_image:torch.Tensor, # Ground truth, shape HxWxC
+        R:np.ndarray, # World2View rotation matrix, shape 3x3
+        t:np.ndarray, # World2View translation vector, shape 3
         device:torch.device,
         fovx:float,
         fovy:float,
@@ -36,24 +36,24 @@ class Camera:
         self.device = device
 
     @property
-    def fx(self):
+    def fx(self) -> float:
         return self.W / (2 * math.tan(self.fovx / 2))
 
     @property
-    def fy(self):
+    def fy(self) -> float:
         return self.H / (2 * math.tan(self.fovy / 2))
 
     @property
-    def viewmat(self):
+    def viewmat(self) -> torch.Tensor:
         V = np.eye(4)
 
         V[:3,:3] = self.R
         V[3,:3] = self.t
 
-        return torch.tensor(V,device=self.device,dtype=torch.float)
+        return torch.tensor(V, dtype=torch.float, device=self.device)
 
     @property
-    def projmat(self):
+    def projmat(self) -> torch.Tensor:
         """
         https://github.com/nerfstudio-project/nerfstudio/blob/9e33b437dff6df5a9579c04b1eba46640df88a96/nerfstudio/models/gaussian_splatting.py#L73
         """

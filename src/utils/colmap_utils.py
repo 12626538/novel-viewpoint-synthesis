@@ -5,13 +5,13 @@ from PIL import Image
 import torch
 import torchvision.transforms as transforms
 
-def qvec2rotmat(qvec:np.ndarray, device='cuda:0') -> torch.Tensor:
+def qvec2rotmat(qvec:np.ndarray) -> np.ndarray:
     """
     Convert [w,x,y,z] quaternion to 3x3 rotation matrix
     """
     w,x,y,z = qvec
 
-    R = torch.zeros((3, 3), device=device)
+    R = np.zeros((3, 3))
 
     R[0, 0] = 1 - 2 * (y*y + z*z)
     R[0, 1] = 2 * (x*y - w*z)
@@ -59,7 +59,7 @@ def read_cameras(path:str) -> dict[str,dict]:
     """
     cameras = {}
 
-    print("Reading cameras...",end=" ",flush=True)
+    print("Reading cameras...")
 
     # If path is not a file, `root_dir` or `data_folder` is not correctly set
     # in ColmapDataSet
@@ -100,8 +100,6 @@ def read_cameras(path:str) -> dict[str,dict]:
                         "fy": float(params[1]),
                     }
 
-                    print("#",end="",flush=True)
-
                 # This will get caught in the clause below to print a warning only
                 else:
                     raise NotImplementedError("Camera model is not 'PINHOLE', which is the only model implemented")
@@ -109,7 +107,6 @@ def read_cameras(path:str) -> dict[str,dict]:
             # If something went wrong, simply print line number and error message as a warning
             except Exception as e:
                 print(f"\n!Warning! could not parse line number {line_num} in {path}.\n{type(e)}: {e}")
-    print()
     return cameras
 
 
@@ -135,7 +132,7 @@ def read_images(path:str) -> list[dict]:
     """
     images = []
 
-    print("Reading images...", end=" ",flush=True)
+    print("Reading images...")
 
     # If path is not a file, `root_dir` or `data_folder` is not correctly set
     # in ColmapDataSet
@@ -155,10 +152,6 @@ def read_images(path:str) -> list[dict]:
             # Skip commented
             if line.startswith('#'): continue;
 
-            # The current line contains camera extrinsics, so skip the next one
-            # as it contains POINTS2D[] info
-            file.readline()
-
             # Try to parse line, but only print a warning if a line fails
             try:
 
@@ -176,13 +169,16 @@ def read_images(path:str) -> list[dict]:
                     "name": name,
                 })
 
-                print("#",end="",flush=True)
-
             # If something went wrong, simply print line number and error message as a warning
             except Exception as e:
-                print(f"\n!Warning! could not parse line number {line_num} in {path}.\n{type(e)}: {e}",flush=True)
+                print(f"\n!Warning! could not parse line number {line_num} in {path}.\n{type(e)}: {e}")
 
-    print()
+
+            # The current line contains camera extrinsics, so skip the next one
+            # as it contains POINTS2D[] info
+            file.readline()
+            line_num+=1
+
     return images
 
 
@@ -219,7 +215,7 @@ def read_points3D(path:str) -> tuple[np.ndarray,np.ndarray]:
 
             line = file.readline()
             line_num += 1
-            if line is None: break;
+            if line is None or not line: break;
             line = line.strip()
 
             # Skip commented
@@ -229,11 +225,14 @@ def read_points3D(path:str) -> tuple[np.ndarray,np.ndarray]:
             try:
 
                 _,x,y,z,r,g,b,_ = line.split(maxsplit=7)
-                means.append(  np.array( map(float, [x,y,z]) ) )
-                colors.append( np.array( map(float, [r,g,b]) ) / 255. )
+                means.append(  np.array( [float(x), float(y), float(z)]) )
+                colors.append( np.array( [float(r), float(g), float(b)]) / 255. )
 
             # If something went wrong, simply print line number and error message as a warning
             except Exception as e:
                 print(f"!Warning! could not parse line number {line_num} in {path}.\n{type(e)}: {e}")
 
     return means, colors
+
+if __name__ == '__main__':
+    read_points3D('/home/jip/data1/3du_data_2/sparse/0/points3D.txt')
