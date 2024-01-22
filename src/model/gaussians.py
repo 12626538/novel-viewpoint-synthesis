@@ -7,7 +7,7 @@ from torch import nn
 from ..utils.camera import Camera
 from ..utils.colmap_utils import read_points3D
 
-class Gaussians:
+class Gaussians(nn.Module):
     BLOCK_X, BLOCK_Y = 16, 16
 
     @classmethod
@@ -15,6 +15,7 @@ class Gaussians:
         cls,
         path_to_points3D_file:str,
         device='cuda:0',
+        *args,**kwargs
     ) -> 'Gaussians':
 
         means, colors = read_points3D(path_to_points3D_file)
@@ -28,6 +29,7 @@ class Gaussians:
             device=device,
             means=means,
             colors=colors,
+            *args,**kwargs
         )
 
     def __init__(
@@ -41,6 +43,7 @@ class Gaussians:
         colors=None,
         opacities=None,
     ):
+        super().__init__()
         self.num_points = num_points
         self.device = device
 
@@ -48,7 +51,7 @@ class Gaussians:
             means = scene_size * 2 *torch.rand(self.num_points, 3, device=self.device) - scene_size
 
         if scales is None:
-            scales = torch.rand(self.num_points, 3, device=self.device) / 4.
+            scales = torch.rand(self.num_points, 3, device=self.device) / (scene_size*2.)
 
         if quats is None:
             u = torch.rand(self.num_points, 1, device=self.device)
@@ -70,11 +73,11 @@ class Gaussians:
         if opacities is None:
             opacities = torch.ones((self.num_points, 1), device=self.device)/2.
 
-        self.means = nn.Parameter(means)
-        self.scales = nn.Parameter(scales)
-        self.quats = nn.Parameter(quats)
-        self.colors = nn.Parameter(colors)
-        self.opacities = nn.Parameter(opacities)
+        self.means = nn.Parameter(means.float())
+        self.scales = nn.Parameter(scales.float())
+        self.quats = nn.Parameter(quats.float())
+        self.colors = nn.Parameter(colors.float())
+        self.opacities = nn.Parameter(opacities.float())
 
     def render(
             self,
@@ -141,3 +144,4 @@ class Gaussians:
         )
 
         return out_img
+    forward=render

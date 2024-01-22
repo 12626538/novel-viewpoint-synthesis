@@ -45,7 +45,7 @@ class ColmapDataSet:
 
             self.cameras.append(Camera(
                 gt_image=image_path_to_tensor( os.path.join(root_dir, img_folder, image['name']) ),
-                R=qvec2rotmat(image['qvec']),
+                R=qvec2rotmat(image['qvec']).T,
                 t=image['tvec'],
                 fovx=focal2fov(camera['fx'], camera['width']),
                 fovy=focal2fov(camera['fy'], camera['height']),

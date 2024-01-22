@@ -232,6 +232,8 @@ def read_points3D(path:str) -> tuple[np.ndarray,np.ndarray]:
             except Exception as e:
                 print(f"!Warning! could not parse line number {line_num} in {path}.\n{type(e)}: {e}")
 
+    means = np.vstack(means)
+    colors = np.vstack(colors)
     return means, colors
 
 if __name__ == '__main__':

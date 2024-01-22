@@ -47,8 +47,8 @@ class Camera:
     def viewmat(self) -> torch.Tensor:
         V = np.eye(4)
 
-        V[:3,:3] = self.R
-        V[3,:3] = self.t
+        V[:3,:3] = self.R.T
+        V[:3,3] = self.t
 
         return torch.tensor(V, dtype=torch.float, device=self.device)
 
@@ -70,6 +70,11 @@ class Camera:
             [0.0, 0.0, 1.0, 0.0]],
             device=self.device,
         )
+
+    def to(self, device) -> 'Camera':
+        self.device = device
+        self.gt_image = self.gt_image.to(device)
+        return self
 
     def __str__(self):
         return f"Camera(name='{self.name}')"
