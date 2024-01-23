@@ -58,13 +58,22 @@ class ColmapDataSet:
 
     def __iter__(self):
         """
-        Iterate dataset"""
+        Iterate dataset
+        """
         _idxs = list(range(len(self)))
         if self.shuffled:
             random.shuffle(_idxs)
 
         for id in _idxs:
             yield self.cameras[id]
+
+    def cycle(self):
+        """
+        Like iter, but loops infinitely
+        """
+        while True:
+            for camera in self:
+                yield camera
 
 
 if __name__ == '__main__':

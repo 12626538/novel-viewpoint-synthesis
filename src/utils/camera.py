@@ -6,12 +6,13 @@ class Camera:
     uid=0
     def __init__(
         self,
-        gt_image:torch.Tensor, # Ground truth, shape HxWxC
         R:np.ndarray, # World2View rotation matrix, shape 3x3
         t:np.ndarray, # World2View translation vector, shape 3
         device:torch.device,
         fovx:float,
         fovy:float,
+        gt_image:torch.Tensor=None, # Ground truth, shape HxWxC
+        H:int=None,W:int=None, # Height and Width, specify if gt_image is unspecified
         znear:float=0.01,
         zfar:float=100.,
         name:str=None
@@ -27,8 +28,14 @@ class Camera:
         self.znear = znear
         self.zfar = zfar
 
-        self.gt_image = gt_image.to(device)
-        self.H,self.W = gt_image.shape[:2]
+        if gt_image is not None:
+            self.gt_image = gt_image.to(device)
+            self.H,self.W = gt_image.shape[:2]
+        elif H is not None and W is not None:
+            self.gt_image = None
+            self.H, self.W = H,W
+        else:
+            raise ValueError("Either specify gt_image or H,W parameters when initializing Camera instance, got neither")
 
         self.fovx = fovx
         self.fovy = fovy
