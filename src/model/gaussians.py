@@ -194,7 +194,7 @@ class Gaussians(nn.Module):
         )
 
         # Reset gradient stats, make sure no NameError happens
-        self.reset_densification_stats()
+        # self.reset_densification_stats()
 
 
     def set_parameters(self,means,scales,quats,colors,opacities):

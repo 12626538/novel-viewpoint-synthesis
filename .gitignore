@@ -1,5 +1,9 @@
 renders/
+models/
+nohup.out
 *.code-workspace
+*.png
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
