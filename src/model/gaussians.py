@@ -194,7 +194,7 @@ class Gaussians(nn.Module):
         )
 
         # Reset gradient stats, make sure no NameError happens
-        # self.reset_densification_stats()
+        self.reset_densification_stats()
 
 
     def set_parameters(self,means,scales,quats,colors,opacities):
@@ -267,13 +267,13 @@ class Gaussians(nn.Module):
         )
 
         # Save a mask of visible Gaussians, used for densification
-        # self._last_visible = ( self._last_radii.detach() > 0 ).squeeze()
+        self._last_visible = ( self._last_radii.detach().cpu() > 0 ).squeeze()
 
         # Attempt to keep position gradients
-        # try:
-        #     self._last_xys.retain_grad()
-        # except:
-        #     pass
+        try:
+            self._last_xys.retain_grad()
+        except:
+            pass
 
         # Generate image
         out_img = gsplat.rasterize_gaussians(
@@ -299,15 +299,15 @@ class Gaussians(nn.Module):
         """
         # Disable `update_grad_stats` until a `render` call has been made
         self._last_xys = None
-        self._last_visible = torch.full((self.num_points,), False, device=self.device)
+        self._last_visible = torch.full((self.num_points,), False)
 
         # Reset running average
-        self._xys_grad = torch.zeros((self.num_points,2), device=self.device)
-        self._xys_grad_norm = torch.zeros((self.num_points,), device=self.device)
+        self._xys_grad = torch.zeros((self.num_points,2))
+        self._xys_grad_norm = torch.zeros((self.num_points,))
 
         # Reset maximum radii
         self._last_radii = None
-        self._max_radii = torch.zeros(self.num_points, device=self.device)
+        self._max_radii = torch.zeros(self.num_points)
 
 
     def update_densification_stats(self) -> None:
@@ -319,14 +319,14 @@ class Gaussians(nn.Module):
 
         # Update running average of visible Gaussians
         if self._last_xys is not None and self._last_xys.grad is not None:
-            self._xys_grad[self._last_visible] += self._last_xys.grad[self._last_visible]
+            self._xys_grad[self._last_visible] += self._last_xys.grad.detach().cpu()[self._last_visible]
             self._xys_grad_norm[self._last_visible] += 1
 
         # Update max radii
         if self._last_radii is not None:
             self._max_radii[self._last_visible] = torch.max(
                 self._max_radii[self._last_visible],
-                self._last_radii[self._last_visible],
+                self._last_radii.detach().cpu()[self._last_visible],
             )
 
 
