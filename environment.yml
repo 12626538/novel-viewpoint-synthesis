@@ -5,12 +5,12 @@ channels:
   - defaults
   - nvidia
 dependencies:
-  - plyfile=1.0.3
-  - python=3.9.18
-  - pip=23.3.1
-  - pytorch-cuda=11.6
-  - torchaudio=0.13.1
-  - torchvision=0.14.1
+  - plyfile
+  - python
+  - pip
+  - pytorch-cuda=11.8
+  - torchaudio
+  - torchvision
   - tqdm
   - pip:
     - submodules/gsplat

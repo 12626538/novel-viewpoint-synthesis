@@ -3,7 +3,8 @@ import math
 import numpy as np
 
 import torch
-from torch import nn
+from torch import nn,optim
+import torch.nn.functional as F
 import plyfile
 
 from ..utils.camera import Camera
@@ -12,10 +13,6 @@ from ..utils import batch_qvec2rotmat
 
 class Gaussians(nn.Module):
     BLOCK_X, BLOCK_Y = 16, 16
-
-    act_scales = torch.exp
-    act_colors = torch.sigmoid
-    act_opacities = torch.sigmoid
 
 
     @classmethod
@@ -27,7 +24,9 @@ class Gaussians(nn.Module):
     ) -> 'Gaussians':
         """
         Reads a `points3D.txt` file exported by COLMAP and creates a Gaussians instance with it
-        by specifying the colors and means. Opacities and rotations will still be random
+        by specifying the colors and means.
+
+        Any additional kwargs will be passed to Gaussians.__init__
         """
 
         means, colors = colmap_utils.read_points3D(path_to_points3D_file)
@@ -52,6 +51,8 @@ class Gaussians(nn.Module):
         """
         Read `.ply` file and initialize Gaussians using positions and colors
         from PlyData.
+
+        Any additional kwargs will be passed to Gaussians.__init__
         """
         # Read ply data
         plydata = plyfile.PlyData.read(path_to_ply_file)
@@ -80,11 +81,18 @@ class Gaussians(nn.Module):
         quats:torch.Tensor=None,
         colors:torch.Tensor=None,
         opacities:torch.Tensor=None,
-        scene_size:float=1.,
-        max_scale:float=0.01,
+        scene_extend:float=1.,
+        color_dim:int=3,
+        act_scales=torch.exp,
+        act_quats=F.normalize,
+        act_colors=F.sigmoid,
+        act_opacities=F.sigmoid,
+        lr_position:float=0.00016,
+        lr_scales:float=0.005,
+        lr_quats:float=0.001,
+        lr_colors:float=0.0025,
+        lr_opacities:float=0.05,
         device='cuda:0',
-        grad_threshold:float=0.0002,
-        min_opacity:float=0.005,
     ):
         """
         Set up Gaussians instance
@@ -108,7 +116,7 @@ class Gaussians(nn.Module):
         - `quats:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,4`.
         If not specified, initialize uniformly random rotation.
 
-        - `colors:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,C`.
+        - `colors:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,color_dim`.
         If not specified, initialize RGB uniformly in `0,1` (note that this will be passed through a sigmoid before rendering).
 
         - `opacities:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,1`.
@@ -116,44 +124,37 @@ class Gaussians(nn.Module):
 
         - `scene_size:float` - Scale of the scene, used to initialize means if unspecified.
 
-        - `grad_threshold:float=.0002` - Gradient threshold for densification
+        - `color_dim:int` - Dimensionality of colors, default 3 (RGB)
 
-        - `max_scale:float=0.01` - When densifying, discard any splat with a scale larger than this
+        - `act_scales`,`act_quats`,`act_colors`,`act_opacities` - Activation functions, applied before rendering
 
-        - `min_opacity:float=0.005` - When densifying, prune splats with a opacity lower than this
+        - `lr_position`,`lr_scales`,`lr_quats`,`lr_colors`,`lr_opacities` - Activation functions, applied before rendering
 
         where `N` is the number of points (either `num_points` or `means.shape[0]`)
-        and `C` is the feature dimension of colors, default is `3` (RGB).
         """
         # Init `torch.nn.Module` instance
         super().__init__()
 
         self.device = device
 
-        self.grad_threshold = grad_threshold
-        self.min_opacity = min_opacity
-
         # Use pre-defined means
         if means is not None:
             num_points = means.shape[0]
 
             # Update scene size to be at least a bounding box for the splats
-            scene_size = max(scene_size, means.abs().max())
+            scene_extend = max(scene_extend, means.abs().max())
 
         # Use pre-defined number of points
         elif num_points is not None:
-            means = scene_size * 2*( torch.rand(num_points, 3, device=self.device) - .5 )
+            means = scene_extend * 2*( torch.rand(num_points, 3, device=self.device) - .5 )
 
         # Raise error when neither means nor num_points is set
         else:
             raise ValueError("Either set `means` or `num_points` when initializing `Gaussians` instance")
 
-        # Set max density
-        self.max_scale = max_scale
-
         # Initialize scales
         if scales is None:
-            scales = torch.log( torch.rand(num_points, 3, device=self.device) / (scene_size*2) )
+            scales = torch.log( torch.rand(num_points, 3, device=self.device) / (scene_extend*2) )
 
         # Initialize rotation
         if quats is None:
@@ -172,7 +173,7 @@ class Gaussians(nn.Module):
 
         # Initialize colors
         if colors is None:
-            colors = torch.rand(num_points, 3, device=self.device)
+            colors = torch.rand(num_points, color_dim, device=self.device)
 
         # Initialize opacities
         if opacities is None:
@@ -182,32 +183,32 @@ class Gaussians(nn.Module):
         if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities)):
             raise ValueError("Not all parameters of Gaussians have the same first dimension")
 
-
-        # Save parameters to model
-        self.set_parameters(
-            means=means,
-            scales=scales,
-            quats=quats,
-            colors=colors,
-            opacities=opacities
-        )
-
-        # Reset gradient stats, make sure no NameError happens
-        self.reset_densification_stats()
-
-
-    def set_parameters(self,means,scales,quats,colors,opacities):
-        """
-        Set parameters as Parameters to model
-
-        This method is shared by the __init__ and densify fuction
-        """
-        # Save parameters as Parameters
+        # Save as Parameters
         self.means = nn.Parameter(means.float())
         self.scales = nn.Parameter(scales.float())
         self.quats = nn.Parameter(quats.float())
         self.colors = nn.Parameter(colors.float())
         self.opacities = nn.Parameter(opacities.float())
+
+        # Set up optimizer
+        self.optimizer = optim.Adam(
+            [
+                {'params': [self.means], 'lr':lr_position, 'name': 'means'},
+                {'params': [self.scales], 'lr':lr_scales, 'name': 'scales'},
+                {'params': [self.quats], 'lr':lr_quats, 'name': 'quats'},
+                {'params': [self.colors], 'lr':lr_colors, 'name': 'colors'},
+                {'params': [self.opacities], 'lr':lr_opacities, 'name': 'opacities'},
+            ]
+        )
+
+        # Set activation functions
+        self.act_scales = act_scales
+        self.act_quats = act_quats
+        self.act_colors = act_colors
+        self.act_opacities = act_opacities
+
+        # Reset gradient stats, make sure no NameError happens
+        self.reset_densification_stats()
 
 
     @property
@@ -220,7 +221,7 @@ class Gaussians(nn.Module):
             camera:Camera,
             glob_scale:float=1.0,
             bg:torch.Tensor=None,
-        ):
+        ) -> dict[str]:
         """
         Render a Camera instance using gaussian splatting
 
@@ -232,9 +233,12 @@ class Gaussians(nn.Module):
         - `glob_scale:float=1.0` - Global scaling factor for the gaussians
         - `bg:Optional[torch.Tensor]=None` - Background to use, random if None
 
-        Returns
-        - `out_img:torch.Tensor` - Generated image, shape `H,W,C` where `C` is
-        equal to `Gaussians.rgbs.shape[1]`
+        Returns a **dict** with keys
+        - `rendering:torch.Tensor` - Generated image, shape `H,W,C` where `C` is
+        equal to `Gaussians.colors.shape[1]`
+        - `xys:torch.Tensor` - 2D location of splats, shape `N,2` where `N` is
+        equal to `Gaussians.num_points`.
+        - `visibility_mask:torch.Tensor` - Mask of visible splats, shape `N`
         """
 
         # Set up number of tiles in X,Y,Z direction
@@ -249,11 +253,11 @@ class Gaussians(nn.Module):
             bg = torch.rand(3, device=self.device)
 
         # Project Gaussians from 3D to 2D
-        self._last_xys, depths, self._last_radii, conics, num_tiles_hit, cov3d = gsplat.project_gaussians(
+        xys, depths, radii, conics, num_tiles_hit, cov3d = gsplat.project_gaussians(
             means3d=self.means,
             scales=self.act_scales( self.scales ),
             glob_scale=glob_scale,
-            quats=self.quats,
+            quats=self.act_quats( self.quats ),
             viewmat=camera.viewmat,
             projmat=camera.projmat @ camera.viewmat,
             fx=camera.fx,
@@ -265,30 +269,32 @@ class Gaussians(nn.Module):
             tile_bounds=tile_bounds
         )
 
-        # Save a mask of visible Gaussians, used for densification
-        self._last_visible = ( self._last_radii.detach().cpu() > 0 ).squeeze()
-
-        # Attempt to keep position gradients
+        # Attempt to keep position gradients to update densification stats
         try:
-            self._last_xys.retain_grad()
+            xys.retain_grad()
         except:
             pass
 
         # Generate image
         out_img = gsplat.rasterize_gaussians(
-            xys=self._last_xys,
+            xys=xys,
             depths=depths,
-            radii=self._last_radii,
+            radii=radii,
             conics=conics,
             num_tiles_hit=num_tiles_hit,
-            colors=self.act_colors(self.colors),
-            opacity=self.act_opacities(self.opacities),
+            colors=self.act_colors( self.colors ),
+            opacity=self.act_opacities( self.opacities ),
             img_height=camera.H,
             img_width=camera.W,
             background=bg,
         )
 
-        return out_img
+        return {
+            'rendering': out_img,
+            'xys': xys,
+            'radii': radii,
+            'visibility_mask': (radii > 0).squeeze()
+        }
     forward=render
 
 
@@ -296,20 +302,20 @@ class Gaussians(nn.Module):
         """
         Reset densification stats, automatically called after densifying
         """
-        # Disable `update_grad_stats` until a `render` call has been made
-        self._last_xys = None
-        self._last_visible = torch.full((self.num_points,), False)
-
         # Reset running average
-        self._xys_grad = torch.zeros((self.num_points,2))
-        self._xys_grad_norm = torch.zeros((self.num_points,))
+        self._xys_grad_accum = torch.zeros((self.num_points,2), device=self.device)
+        self._xys_grad_norm = torch.zeros((self.num_points,), device=self.device)
 
         # Reset maximum radii
-        self._last_radii = None
-        self._max_radii = torch.zeros(self.num_points)
+        self._max_radii = torch.zeros(self.num_points, device=self.device)
 
 
-    def update_densification_stats(self) -> None:
+    def update_densification_stats(
+            self,
+            xys:torch.FloatTensor,
+            radii:torch.FloatTensor,
+            visibility_mask:torch.BoolTensor,
+        ) -> None:
         """
         Update internal running average of 2D positional gradient and maximum radii
 
@@ -317,19 +323,26 @@ class Gaussians(nn.Module):
         """
 
         # Update running average of visible Gaussians
-        if self._last_xys is not None and self._last_xys.grad is not None:
-            self._xys_grad[self._last_visible] += self._last_xys.grad.detach().cpu()[self._last_visible]
-            self._xys_grad_norm[self._last_visible] += 1
+        if xys.grad is not None:
+            self._xys_grad_accum[visibility_mask] += xys.grad[visibility_mask]
+            self._xys_grad_norm[visibility_mask] += 1
 
         # Update max radii
-        if self._last_radii is not None:
-            self._max_radii[self._last_visible] = torch.max(
-                self._max_radii[self._last_visible],
-                self._last_radii.detach().cpu()[self._last_visible],
+        if radii is not None:
+            self._max_radii[visibility_mask] = torch.max(
+                self._max_radii[visibility_mask],
+                radii[visibility_mask],
             )
 
 
-    def densify(self,N=2):
+    def densify(
+            self,
+            grad_threshold:float,
+            max_scale:float,
+            min_opacity:float,
+            max_radius:float=None,
+            N:int=2
+        ):
         """
         Clone and Split Gaussians based on stats acumulated with rendering. Select
         Gaussians with a high viewspace gradient for cloning and splitting
@@ -340,16 +353,33 @@ class Gaussians(nn.Module):
         Split: Increase number of Gaussians, but keep the total volume the same
         by replacing one splat by two smaller ones, based on the scale of the original.
 
+        For both methods, for every selected splat, `N` new means are sampled using
+        the original splat as a PDF. Opacity, color and rotation are duplicated for these
+        new splats, and the scale is reduced by a factor `1/(.8*N)` for splats that are
+        selected to be split (cloned splats will have the same scale as the original).
+
+        Aditionally, discard any nearly transparent splat, as determined by `min_opacity`.
+        Also discard any splat that was rendered with a radius larger than `max_radius` (if this
+        arg is not None)
+
         Parameters:
+        - `grad_threshold:float` - If the norm of the 2D spatial gradient of a splat exceeds
+        this threshold, select it for splitting / cloning.
+        - `max_scale:float` - If the scale of a splat exceeds this threshold, select it for
+        splitting.
+        - `min_opacity:float` - Remove any splat with a opacity lower than this value.
+        - `max_radius:Optional[float]=None` - Remove any splat that was rendered with a radius larger than this value.
+        If None, skip this step.
         - `N:int=2` - Number of splats to replace a selected splat with.
         """
         print("#"*20,f"\nDensifying... [started with {self.num_points} splats]")
+
         # Compute actual average
-        grads = ( torch.linalg.norm(self._xys_grad, dim=1) / self._xys_grad_norm ).to(self.device)
+        grads = ( torch.linalg.norm(self._xys_grad_accum, dim=1) / self._xys_grad_norm ).to(self.device)
         grads[grads.isnan()] = 0.
 
         # Compute mask with gradient condition
-        grad_cond = grads >= self.grad_threshold
+        grad_cond = grads >= grad_threshold
 
         print(f"{grad_cond.sum()} splats selected for cloning/splitting")
 
@@ -364,7 +394,7 @@ class Gaussians(nn.Module):
         quats = self.quats[grad_cond].repeat( N, 1 )
         rotmats = batch_qvec2rotmat(quats)
 
-        # Then the new mean is the original mean + rotated noise
+        # Then the new mean is the original mean + (rotated) noise
         means = torch.bmm(rotmats, noise.unsqueeze(2)).squeeze() + self.means[grad_cond].repeat( N, 1 )
 
         # Also copy over the other splat parameters
@@ -372,25 +402,82 @@ class Gaussians(nn.Module):
         opacities = self.opacities[grad_cond].repeat( N, 1 )
 
         # For the split splats, also reduce the scale by 1.6 (as per the original implementation)
-        split_cond = ( torch.max(scales,axis=1).values > self.max_scale ).squeeze()
+        split_cond = ( torch.max(scales,axis=1).values > max_scale ).squeeze()
         scales[split_cond] = scales[split_cond] / (0.8*N)
 
         print(f"{split_cond.sum()} splats selected for splitting")
 
         # Finally, from the unselected points, take those with a sufficient opacity
-        keep_cond = ~grad_cond & (self.opacities > self.min_opacity).squeeze()
+        prune_cond = grad_cond & (self.act_opacities( self.opacities ) <= min_opacity).squeeze()
 
-        print(f"Not touching {keep_cond.sum()} splats")
+        # If set, discard any splat that was rendered with a view radius larger than this
+        if max_radius is not None:
+            prune_cond = prune_cond & (self._max_radii > max_radius).to(self.device)
+
+        print(f"Pruning {prune_cond.sum()} splats")
 
         # Add the unselected and split/pruned points together
-        self.set_parameters(
-            means=torch.concat( ( self.means[keep_cond], means ) ),
-            scales=torch.concat( ( self.scales[keep_cond], scales ) ),
-            quats=torch.concat( ( self.quats[keep_cond], quats ) ),
-            colors=torch.concat( ( self.colors[keep_cond], colors ) ),
-            opacities=torch.concat( ( self.opacities[keep_cond], opacities ) )
+        self.update_optimizer(
+            dict_to_cat={
+                'means':means,
+                'scales':scales,
+                'quats':quats,
+                'colors':colors,
+                'opacities':opacities,
+            },
+            prune_mask=prune_cond
         )
 
         print(f"Now has {self.num_points} splats")
 
         self.reset_densification_stats()
+
+    def update_optimizer(
+            self,
+            dict_to_cat:dict[str,torch.Tensor],
+            prune_mask:torch.BoolTensor,
+        ) -> None:
+        """
+        Concatenate and prune existing parameters in optimizer
+
+        From https://github.com/graphdeco-inria/gaussian-splatting/blob/2eee0e26d2d5fd00ec462df47752223952f6bf4e/scene/gaussian_model.py#L307
+        """
+
+
+        keep_mask = ~prune_mask
+
+        # Iterate parameter groups
+        for group in self.optimizer.param_groups:
+
+            # Get tensor to concatenate, or empty if nothing to add
+            extension_tensor = dict_to_cat.get(group["name"],torch.empty(0))
+
+            # Update stored state
+            stored_state = self.optimizer.state.get(group['params'][0], None)
+            if stored_state is not None:
+
+                # Initialize extension stats as zeros
+                stored_state["exp_avg"] = torch.cat((stored_state["exp_avg"][keep_mask], torch.zeros_like(extension_tensor)), dim=0)
+                stored_state["exp_avg_sq"] = torch.cat((stored_state["exp_avg_sq"][keep_mask], torch.zeros_like(extension_tensor)), dim=0)
+
+                # Update parameter/stored state
+                del self.optimizer.state[group['params'][0]]
+                group["params"][0] = nn.Parameter(torch.cat((group["params"][0][keep_mask], extension_tensor), dim=0))
+                self.optimizer.state[group['params'][0]] = stored_state
+
+            # Update parameter
+            else:
+                group["params"][0] = nn.Parameter(torch.cat((group["params"][0][keep_mask], extension_tensor), dim=0))
+
+            # Update Gaussians.means etc to updated group parameter
+            setattr(self, group['name'], group['params'][0])
+
+
+    def reset_opacity(self):
+        """
+        Clip all opacities at 0.01
+
+        Because opacities get fed through a sigmoid, set the value to `-4.59512`
+        s.t. `sigmoid(-4.59512) = 0.01`
+        """
+        self.opacities.clamp_max_(-4.59512)
