@@ -81,7 +81,7 @@ class Gaussians(nn.Module):
         colors:torch.Tensor=None,
         opacities:torch.Tensor=None,
         scene_size:float=1.,
-        max_dense_percent:float=0.01,
+        max_scale:float=0.01,
         device='cuda:0',
         grad_threshold:float=0.0002,
         min_opacity:float=0.005,
@@ -118,8 +118,7 @@ class Gaussians(nn.Module):
 
         - `grad_threshold:float=.0002` - Gradient threshold for densification
 
-        - `max_dense_percent:float=.01` - When densifying, discard any splat with a scale larger than
-        `max_dense_percent * scene_size`
+        - `max_scale:float=0.01` - When densifying, discard any splat with a scale larger than this
 
         - `min_opacity:float=0.005` - When densifying, prune splats with a opacity lower than this
 
@@ -150,7 +149,7 @@ class Gaussians(nn.Module):
             raise ValueError("Either set `means` or `num_points` when initializing `Gaussians` instance")
 
         # Set max density
-        self.max_density = max_dense_percent * scene_size
+        self.max_scale = max_scale
 
         # Initialize scales
         if scales is None:
@@ -346,7 +345,7 @@ class Gaussians(nn.Module):
         """
         print("#"*20,f"\nDensifying... [started with {self.num_points} splats]")
         # Compute actual average
-        grads = torch.linalg.norm(self._xys_grad, dim=1) / self._xys_grad_norm
+        grads = ( torch.linalg.norm(self._xys_grad, dim=1) / self._xys_grad_norm ).to(self.device)
         grads[grads.isnan()] = 0.
 
         # Compute mask with gradient condition
@@ -373,7 +372,7 @@ class Gaussians(nn.Module):
         opacities = self.opacities[grad_cond].repeat( N, 1 )
 
         # For the split splats, also reduce the scale by 1.6 (as per the original implementation)
-        split_cond = ( scales > self.max_density ).squeeze()
+        split_cond = ( torch.max(scales,axis=1).values > self.max_scale ).squeeze()
         scales[split_cond] = scales[split_cond] / (0.8*N)
 
         print(f"{split_cond.sum()} splats selected for splitting")

@@ -53,6 +53,14 @@ class ColmapDataSet:
                 device=self.device
             ))
 
+
+        camera_positions = np.vstack([camera.t for camera in self.cameras])
+        print(camera_positions.shape)
+        center_camera = camera_positions.mean(axis=0,keepdims=True)
+
+        self.scene_extend:float = np.linalg.norm(camera_positions - center_camera, axis=0).max()
+
+
     def __len__(self):
         return len(self.cameras)
 
