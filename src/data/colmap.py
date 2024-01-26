@@ -3,27 +3,47 @@ import random
 
 from ..utils.colmap_utils import *
 from ..utils.camera import Camera
+from ..utils import qvec2rotmat,image_path_to_tensor,focal2fov
 
 class ColmapDataSet:
+    """
+    COLMAP dataset class. Is mostly just a fancy wrapper for a list of
+    `Camera` instances.
+
+    Usage: Iterate cameras in order (or shuffled if `shuffled=True`)
+    >>> dataset = ColmapDataSet(..., shuffled=False)
+    >>> for camera in dataset:
+    >>>     print(camera.name)
+
+    Usage: similar to above, but keep cycling the dataset infinitely
+    >>> dataset = ColmapDataSet(...)
+    >>> ds_iter = dataset.cycle() # Create infinte iterator
+    >>> while True:
+    >>>     camera = next(ds_iter)
+    """
     def __init__(
         self,
         root_dir:str,
         img_folder:str='images',
         data_folder:str='sparse/0',
         rescale:float=None,
-        device='cuda:0',
+        device='cuda',
         shuffled:bool=True,
     ) -> None:
         """
         Initialize ColmapDataSet
 
-        - @parameter `root_dir:str` Root directory of data set
-        - @parameter `img_folder:str='images/'` Folder with images,
+        Parameters:
+        - `root_dir:str` Root directory of data set
+        - `img_folder:str='images/'` Folder with images,
             relative to `root_dir`
-        - @parameter `data_folder:str='sparse/0/'` Folder with data files,
+        - `data_folder:str='sparse/0/'` Folder with data files,
             such as `cameras.txt` and `images.txt`
-        - @parameter `rescale:Optional[float]` Downsample images to `1/rescale` scale.
-            Will try to see if `[root_dir]/[img_folder]_[rescale]/` exists and read images from there
+        - `rescale:Optional[float]` Downsample images to `1/rescale` scale.
+            Will try to see if `[root_dir]/[img_folder]_[rescale]/` exists
+            and read images from there
+        - `shuffled:bool=True` Whether to shuffle the cameras when iterating
+            this instance
 
         Raises ValueError if `cameras.txt`, `images.txt` and `points3D.txt`
         cannot be found in `[root_dir]/[data_folder]`
@@ -76,6 +96,7 @@ class ColmapDataSet:
     def __len__(self):
         return len(self.cameras)
 
+
     def __iter__(self):
         """
         Iterate dataset
@@ -87,19 +108,18 @@ class ColmapDataSet:
         for id in _idxs:
             yield self.cameras[id]
 
+
     def cycle(self):
         """
-        Like iter, but loops infinitely
+        Create infinite iterator cycling through cameras
+
+        This method will asure all cameras are iterated at least once
+        before any will be yielded a second time.
+
+        If `ColmapDataSet.shuffled` is set to `True`, cameras will be yielded
+        in random order, and is reshuffled every time all cameras are iterated
+        unlike `itertools.cycle(dataset)`.
         """
         while True:
             for camera in self:
                 yield camera
-
-
-if __name__ == '__main__':
-    db = ColmapDataSet(
-        '/home/jip/data1/3du_data_2/',
-        device='cuda:0' if torch.cuda.is_available() else 'cpu'
-    )
-
-    print(f"Found {len(db)} cameras")

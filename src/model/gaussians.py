@@ -19,7 +19,7 @@ class Gaussians(nn.Module):
     def from_colmap(
         cls,
         path_to_points3D_file:str,
-        device='cuda:0',
+        device='cuda',
         **kwargs
     ) -> 'Gaussians':
         """
@@ -45,7 +45,7 @@ class Gaussians(nn.Module):
     def from_ply(
         cls,
         path_to_ply_file:str,
-        device='cuda:0',
+        device='cuda',
         **kwargs
     ) -> 'Gaussians':
         """
@@ -85,14 +85,14 @@ class Gaussians(nn.Module):
         color_dim:int=3,
         act_scales=torch.exp,
         act_quats=F.normalize,
-        act_colors=F.sigmoid,
-        act_opacities=F.sigmoid,
+        act_colors=torch.sigmoid,
+        act_opacities=torch.sigmoid,
         lr_position:float=0.00016,
         lr_scales:float=0.005,
         lr_quats:float=0.001,
         lr_colors:float=0.0025,
         lr_opacities:float=0.05,
-        device='cuda:0',
+        device='cuda',
     ):
         """
         Set up Gaussians instance
@@ -154,7 +154,7 @@ class Gaussians(nn.Module):
 
         # Initialize scales
         if scales is None:
-            scales = torch.log( torch.rand(num_points, 3, device=self.device) / (scene_extend*2) )
+            scales = torch.log( torch.rand(num_points, 3, device=self.device) / (scene_extend*20) )
 
         # Initialize rotation
         if quats is None:
