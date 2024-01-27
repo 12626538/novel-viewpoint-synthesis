@@ -14,6 +14,11 @@ dataset_group.add_argument(
     help="Dataset to use, needs to contain `images` and `sparse/0/[images|cameras|points3D].txt` files",
 )
 dataset_group.add_argument(
+    "-r", "--resolution", type=int, choices=[1,2,4,8],
+    default=None,
+    help="Rescales images to 1/r scale."
+)
+dataset_group.add_argument(
     "--images-folder",
     default='images',
     help="Use `[source-dir]/[image_folder]` as image folder, allows for downsampled `images_2` subdir",

@@ -1,5 +1,5 @@
 import torch
-from torch.nn import L1Loss, functional as F
+from torch.nn import L1Loss, L2Loss, functional as F
 from torch import Tensor
 from torch.autograd import Variable
 
