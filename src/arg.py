@@ -1,124 +1,91 @@
 import os
 import datetime
-import argparse
+from argparse import ArgumentParser,Namespace
 
-parser = argparse.ArgumentParser(
-    prog="Novel Viewpoint Synthesis using gplsat",
-)
+class ParamGroup(object):
+    """
+    From
+    https://github.com/graphdeco-inria/gaussian-splatting/blob/2eee0e26d2d5fd00ec462df47752223952f6bf4e/arguments/__init__.py#L19
+    """
+    def __init__(self, parser: ArgumentParser, fill_none = False):
+        super().__init__()
 
-# DATASET ARGUMENTS ============================================================
-dataset_group = parser.add_argument_group("Dataset arguments")
-dataset_group.add_argument(
-    "-s", "--source-path",
-    required=True,
-    help="Dataset to use, needs to contain `images` and `sparse/0/[images|cameras|points3D].txt` files",
-)
-dataset_group.add_argument(
-    "-r", "--resolution", type=int, choices=[1,2,4,8],
-    default=None,
-    help="Rescales images to 1/r scale."
-)
-dataset_group.add_argument(
-    "--images-folder",
-    default='images',
-    help="Use `[source-dir]/[image_folder]` as image folder, allows for downsampled `images_2` subdir",
-)
-dataset_group.add_argument(
-    "--meta-folder",
-    default='sparse/0',
-    help="Use `[source-dir]/[meta-fodler]` as [camera|image|points].txt data",
-)
+        group = parser.add_argument_group(self.__class__.__name__)
+        for key, value in vars(self).items():
 
-# TRAIN ARGUMENTS ==============================================================
-train_group = parser.add_argument_group("Training arguments")
-train_group.add_argument(
-    "--num-iterations", type=int,
-    default=7_000,
-    help="Number of iterations to train",
-)
-train_group.add_argument(
-    "--densify-from", type=int,
-    default=5000,
-)
-train_group.add_argument(
-    "--densify-until", type=int,
-    default=6000,
-)
-train_group.add_argument(
-    "--densify-every", type=int,
-    default=100,
-)
-train_group.add_argument(
-    "--save-at", type=int, nargs="+",
-    default=[7_000,30_000],
-    help="Save model checkpoint at these iterations"
-)
-train_group.add_argument(
-    "--test-at", type=int, nargs="+",
-    default=[7_000,30_000],
-    help="Test model at these iterations"
-)
-train_group.add_argument(
-    "--lr-position", type=float,
-    default=0.0016,
-)
-train_group.add_argument(
-    "--lr-scale", type=float,
-    default=0.0016,
-)
-train_group.add_argument(
-    "--lr-rot", type=float,
-    default=0.0016,
-)
-train_group.add_argument(
-    "--lr-color", type=float,
-    default=0.0016,
-)
-train_group.add_argument(
-    "--lr-opacitiy", type=float,
-    default=0.0016,
-)
-train_group.add_argument(
-    "--grad-treshold", type=float,
-    default=1e-8,
-    help="Grad threshold to select splats for cloning/splitting"
-)
-train_group.add_argument(
-    "--max-density", type=float,
-    default=0.01,
-    help="Maximum splat density, will be scaled by scene extant"
-)
+            kwargs = dict()
+
+            # hyphens are nicer than underscores
+            key = key.replace('_','-')
+
+            # Any variable ending in '-' is required
+            if key.endswith('-'):
+                key = key[:-1]
+                kwargs['required'] = True
+
+            # Any variable starting with '_' can be shorthanded by the first letter
+            if key.startswith('-'):
+                name_or_flag = ['-'+key[1:2], '--'+key[1:]]
+            else:
+                name_or_flag = ['--'+key, ]
+
+            # Set type
+            if type(value) == bool:
+                kwargs['action'] = 'store_true'
+            else:
+                kwargs['type'] = type(value)
+
+            # If set, replace any value equivalent to False to None
+            # for example, replaces empty strings with None, which makes it a required argument
+            kwargs['default'] = value
+
+            group.add_argument(*name_or_flag, **kwargs)
+
+    def extract(self, args) -> Namespace:
+        group = Namespace()
+        for var,val in vars(args).items():
+            if var in vars(self) or ("_" + var) in vars(self):
+                setattr(group, var, val)
+        return group
+
+class ModelParams(ParamGroup):
+    def __init__(self, *arg,**kwarg):
+        self.lr_position = 0.0016
+        self.lr_scale    = 0.0016
+        self.lr_rot      = 0.0016
+        self.lr_color    = 0.0016
+        self.lr_opacitiy = 0.0016
+        super().__init__(*arg,**kwarg)
 
 
-# MODEL ARGUMENTS ==============================================================
-model_group = parser.add_argument_group("Model arguments")
-model_group.add_argument(
-    "-c", "--checkpoint",
-    default=None,
-    help="Load from this checkpoint",
-)
-model_group.add_argument(
-    "-m", "--model-dir",
-    default=os.path.join("output", datetime.datetime.now().strftime('%a%d%b%H%M').lower()),
-    help="Load from this checkpoint, default is `output/[current time]`",
-)
+class DataParams(ParamGroup):
+    def __init__(self, *arg,**kwarg):
+        self._source_path_=''
+        self.images_folder='images'
+        self.data_folder='sparse/0'
+        super().__init__(*arg,**kwarg)
 
 
-# MISC ARGUMENTS ===============================================================
-options_group = parser.add_argument_group("TensorBoard arguments")
-options_group.add_argument(
-    "--log-dir",
-    default="./logs/",
-    help="If tensorboard is installed, save results here"
-)
+class TrainParams(ParamGroup):
+    def __init__(self, *arg,**kwarg):
+        self.iterations=30_000
+        self.save_at=[7_000,30_000]
+        self.test_at=[7_000,30_000]
 
-args = parser.parse_args()
-print(args)
+        self.densify_from=2_000
+        self.densify_every=500
+        self.densify_until=15_000
 
-# Split `args` back into groups
-# From https://stackoverflow.com/a/46929320
-arg_groups={}
-for group in parser._action_groups:
-    group_dict={a.dest:getattr(args,a.dest,None) for a in group._group_actions}
-    arg_groups[group.title]=argparse.Namespace(**group_dict)
-print(arg_groups)
+        self.grad_threshold=1e-8
+        self.max_density=0.01
+        super().__init__(*arg,**kwarg)
+
+
+class PipeLineParams(ParamGroup):
+    def __init__(self, *arg,**kwarg):
+        self.device='cuda:0'
+        self.rescale=1
+        self.load_checkpoint=''
+        self.save_checkpoint=''
+        self.log_dir='./logs/'
+        super().__init__(*arg,**kwarg)
