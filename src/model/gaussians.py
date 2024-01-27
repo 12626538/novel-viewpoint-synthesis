@@ -1,3 +1,4 @@
+from collections import namedtuple
 import gsplat
 import math
 import numpy as np
@@ -10,6 +11,9 @@ import plyfile
 from ..utils.camera import Camera
 from ..utils import colmap_utils
 from ..utils import batch_qvec2rotmat
+
+# An instance of this is returned by the `Gaussians.render` method
+RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask"])
 
 class Gaussians(nn.Module):
     BLOCK_X, BLOCK_Y = 16, 16
@@ -221,7 +225,7 @@ class Gaussians(nn.Module):
             camera:Camera,
             glob_scale:float=1.0,
             bg:torch.Tensor=None,
-        ) -> dict[str]:
+        ) -> RenderPackage:
         """
         Render a Camera instance using gaussian splatting
 
@@ -233,11 +237,13 @@ class Gaussians(nn.Module):
         - `glob_scale:float=1.0` - Global scaling factor for the gaussians
         - `bg:Optional[torch.Tensor]=None` - Background to use, random if None
 
-        Returns a **dict** with keys
+        Returns a RenderPackage instance with properties
         - `rendering:torch.Tensor` - Generated image, shape `H,W,C` where `C` is
-        equal to `Gaussians.colors.shape[1]`
+        equal to `Gaussians.colors.shape[1]` and `H,W` is determined by the given
+        `Camera` instance.
         - `xys:torch.Tensor` - 2D location of splats, shape `N,2` where `N` is
-        equal to `Gaussians.num_points`.
+        equal to `Gaussians.num_points`. Will attempt to retain grads, can be
+        used for densification stats.
         - `visibility_mask:torch.Tensor` - Mask of visible splats, shape `N`
         """
 
@@ -289,12 +295,12 @@ class Gaussians(nn.Module):
             background=bg,
         )
 
-        return {
-            'rendering': out_img,
-            'xys': xys,
-            'radii': radii,
-            'visibility_mask': (radii > 0).squeeze()
-        }
+        return RenderPackage(
+            rendering=out_img,
+            xys=xys,
+            radii=radii,
+            visibility_mask=(radii > 0).squeeze()
+        )
     forward=render
 
 
