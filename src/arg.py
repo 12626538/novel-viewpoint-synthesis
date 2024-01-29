@@ -78,6 +78,9 @@ class TrainParams(ParamGroup):
 
         self.grad_threshold=1e-8
         self.max_density=0.01
+
+        self.lambda_dssim=0.2
+
         super().__init__(*arg,**kwarg)
 
 
@@ -85,7 +88,10 @@ class PipeLineParams(ParamGroup):
     def __init__(self, *arg,**kwarg):
         self.device='cuda:0'
         self.rescale=1
+
+        self.model_dir='models'
         self.load_checkpoint=''
-        self.save_checkpoint=''
+        self.save_checkpoint="model_{}.ckpt".format(datetime.datetime.now().strftime('%a%d%b%H%M').lower())
+
         self.log_dir='./logs/'
         super().__init__(*arg,**kwarg)
