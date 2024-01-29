@@ -275,6 +275,11 @@ class Gaussians(nn.Module):
             tile_bounds=tile_bounds
         )
 
+        # TODO: remove this if CUDA errors stop
+        # Sanity check, render nothing if nothing is in view
+        if not (radii > 0).any():
+            raise ValueError("No splats in view")
+
         # Attempt to keep position gradients to update densification stats
         try:
             xys.retain_grad()

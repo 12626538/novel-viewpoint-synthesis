@@ -63,7 +63,7 @@ class CustomDataSet:
 
         self.cameras:list[Camera] = []
         for idx in range(cam_intrs.shape[0]):
-            print(f"\rParsing cameras and images... {idx}/{cam_intrs.shape[0]}",end="",flush=True)
+            print(f"\rParsing cameras and images... {idx+1}/{cam_intrs.shape[0]}",end="",flush=True)
             fname = f"{idx:06d}.png"
 
             self.cameras.append(Camera(
