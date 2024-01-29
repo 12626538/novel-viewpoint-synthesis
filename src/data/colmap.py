@@ -23,8 +23,8 @@ class ColmapDataSet:
     """
     def __init__(
         self,
-        root_dir:str,
-        img_folder:str='images',
+        source_path:str,
+        images_folder:str='images',
         data_folder:str='sparse/0',
         rescale:float=None,
         device='cuda',
@@ -34,48 +34,49 @@ class ColmapDataSet:
         Initialize ColmapDataSet
 
         Parameters:
-        - `root_dir:str` Root directory of data set
-        - `img_folder:str='images/'` Folder with images,
-            relative to `root_dir`
+        - `source_path:str` Root directory of data set
+        - `images_folder:str='images/'` Folder with images,
+            relative to `source_path`
         - `data_folder:str='sparse/0/'` Folder with data files,
             such as `cameras.txt` and `images.txt`
         - `rescale:Optional[float]` Downsample images to `1/rescale` scale.
-            Will try to see if `[root_dir]/[img_folder]_[rescale]/` exists
+            Will try to see if `[source_path]/[images_folder]_[rescale]/` exists
             and read images from there
         - `shuffled:bool=True` Whether to shuffle the cameras when iterating
             this instance
 
         Raises ValueError if `cameras.txt`, `images.txt` and `points3D.txt`
-        cannot be found in `[root_dir]/[data_folder]`
+        cannot be found in `[source_path]/[data_folder]`
 
         Raises FileNotFoundError if images in `images.txt` are not found
-        in `[root_dir]/[img_folder]/[name]`
+        in `[source_path]/[images_folder]/[name]`
         """
 
         self.device = device
         self.shuffled = shuffled
 
-        root_dir = os.path.abspath(root_dir)
-        data_folder = os.path.join(root_dir, data_folder)
-        img_folder = os.path.join(root_dir, img_folder)
+        source_path = os.path.abspath(source_path)
+        data_folder = os.path.join(source_path, data_folder)
+        images_folder = os.path.join(source_path, images_folder)
 
         # Read COLMAP cameras intrinsics and image extrinsics
         cameras = read_cameras( os.path.join(data_folder, 'cameras.txt') )
         images = read_images( os.path.join(data_folder, 'images.txt') )
 
-        # See if `[root_dir]/[image_folder]_[rescale]/` exists
-        if os.path.isdir("{}_{}".format(img_folder.rstrip('/'), rescale)):
+        # See if `[source_path]/[image_folder]_[rescale]/` exists
+        if os.path.isdir("{}_{}".format(images_folder.rstrip('/'), rescale)):
             # Use that folder instead, dont rescale images
-            img_folder = "{}_{}".format(img_folder.rstrip('/'), rescale)
+            images_folder = "{}_{}".format(images_folder.rstrip('/'), rescale)
             rescale=None
 
-        print("Parsing cameras and images...")
+        N = len(images)
         self.cameras:list[Camera] = []
-        for image in images:
+        for idx,image in enumerate(images,1):
+            print("\rParsing cameras and images... {:4}/{:4}".format(idx,N),flush=True,end="")
             camera = cameras[image['camera_id']]
 
             self.cameras.append(Camera(
-                gt_image=image_path_to_tensor( os.path.join(img_folder, image['name']) ),
+                gt_image=image_path_to_tensor( os.path.join(images_folder, image['name']) ),
                 R=qvec2rotmat(image['qvec']).T,
                 t=image['tvec'],
                 fovx=focal2fov(camera['fx'], camera['width']),
@@ -83,6 +84,7 @@ class ColmapDataSet:
                 name=image['name'],
                 device=self.device
             ))
+        print()
 
         self.cameras = sorted(self.cameras, key=lambda cam:cam.name)
 
@@ -90,7 +92,7 @@ class ColmapDataSet:
         camera_positions = np.vstack([camera.t for camera in self.cameras])
         center_camera = camera_positions.mean(axis=0,keepdims=True)
 
-        self.scene_extend:float = np.linalg.norm(camera_positions - center_camera, axis=0).max()
+        self.scene_extend:float = 1.1 * np.linalg.norm(camera_positions - center_camera, axis=0).max()
 
 
     def __len__(self):

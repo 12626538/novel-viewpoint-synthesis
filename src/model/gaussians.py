@@ -61,19 +61,53 @@ class Gaussians(nn.Module):
         # Read ply data
         plydata = plyfile.PlyData.read(path_to_ply_file)
 
-        # Extract positions as np array
-        vertices = plydata['vertex']
-        positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
+        # Pass this to the __init__ function
+        params = {}
 
-        # Extract colors as RGB
-        colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
+        # Extract positions as np array
+        vertex:plyfile.PlyElement = plydata['vertex']
+
+        # Get properties as a set of strings for easy subset checking
+        properties = {prop.name for prop in vertex.properties}
+
+        # convert either xyz or pos_1/2/3 to means
+        if properties.issuperset('xyz'):
+            means = np.vstack([vertex['x'], vertex['y'], vertex['z']]).T
+        elif properties.issuperset({'pos_1','pos_2','pos_3'}):
+            means = np.vstack([vertex['pos_1'], vertex['pos_2'], vertex['pos_3']]).T
+        else:
+            raise ValueError("Cannot read .ply data, vertex needs either xyz or pos_1/2/3 properties")
+        params['means'] = torch.from_numpy(means).to(device)
+
+        # Get scales
+        if properties.issuperset({"scale_1","scale_2","scale_3"}):
+            scales = np.vstack([vertex['scale_1'], vertex['scale_2'], vertex['scale_3']]).T
+            params['scales'] = torch.from_numpy(scales).to(device)
+
+        # Convert rot_1/2/3/4 to quaternions
+        if properties.issuperset({"rot_1","rot_2","rot_3","rot_4"}):
+            quats = np.vstack([vertex['rot_1'], vertex['rot_2'], vertex['rot_3'], vertex['rot_4']]).T
+            params['quats'] = torch.from_numpy(quats).to(device)
+
+        # Extract colors
+        colors = None
+        if properties.issuperset({'red','green','blue'}):
+            colors = np.vstack([vertex['red'], vertex['green'], vertex['blue']]).T / 255.0
+
+        # Convert color_1,color_2,...,color_C to NxC numpy array
+        elif 'color_1' in properties:
+            cols = [prop for prop in sorted(properties) if prop.startswith("color_")]
+            colors = np.vstack([vertex[c] for c in cols]).T
+            params['colors'] = torch.from_numpy(colors).to(device)
+
+        if 'opacity' in properties:
+            params['opacities'] = torch.from_numpy( vertex['opacity'] ).to(device)
 
         # Create Gaussians instance
         return Gaussians(
-            means=torch.from_numpy(positions).to(device),
-            colors=torch.from_numpy(colors).to(device),
             device=device,
-            **kwargs
+            **params,
+            **kwargs,
         )
 
 
@@ -87,16 +121,17 @@ class Gaussians(nn.Module):
         opacities:torch.Tensor=None,
         scene_extend:float=1.,
         color_dim:int=3,
+        device='cuda',
         act_scales=torch.exp,
         act_quats=F.normalize,
         act_colors=torch.sigmoid,
         act_opacities=torch.sigmoid,
-        lr_position:float=0.00016,
+        # The following are set by src/args.py:TrainParams
+        lr_positions:float=0.00016,
         lr_scales:float=0.005,
         lr_quats:float=0.001,
         lr_colors:float=0.0025,
         lr_opacities:float=0.05,
-        device='cuda',
     ):
         """
         Set up Gaussians instance
@@ -132,9 +167,10 @@ class Gaussians(nn.Module):
 
         - `act_scales`,`act_quats`,`act_colors`,`act_opacities` - Activation functions, applied before rendering
 
-        - `lr_position`,`lr_scales`,`lr_quats`,`lr_colors`,`lr_opacities` - Activation functions, applied before rendering
+        - `lr_position`,`lr_scales`,`lr_quats`,`lr_colors`,`lr_opacities` - Learning rates for optimizer.
+        Note that `lr_position` will be scaled by `scene_extent`.
 
-        where `N` is the number of points (either `num_points` or `means.shape[0]`)
+        `N` is the number of splats (either `num_points` or `means.shape[0]`)
         """
         # Init `torch.nn.Module` instance
         super().__init__()
@@ -144,9 +180,6 @@ class Gaussians(nn.Module):
         # Use pre-defined means
         if means is not None:
             num_points = means.shape[0]
-
-            # Update scene size to be at least a bounding box for the splats
-            scene_extend = max(scene_extend, means.abs().max())
 
         # Use pre-defined number of points
         elif num_points is not None:
@@ -197,7 +230,7 @@ class Gaussians(nn.Module):
         # Set up optimizer
         self.optimizer = optim.Adam(
             [
-                {'params': [self.means], 'lr':lr_position, 'name': 'means'},
+                {'params': [self.means], 'lr':lr_positions*scene_extend, 'name': 'means'},
                 {'params': [self.scales], 'lr':lr_scales, 'name': 'scales'},
                 {'params': [self.quats], 'lr':lr_quats, 'name': 'quats'},
                 {'params': [self.colors], 'lr':lr_colors, 'name': 'colors'},
@@ -277,8 +310,11 @@ class Gaussians(nn.Module):
 
         # TODO: remove this if CUDA errors stop
         # Sanity check, render nothing if nothing is in view
+        # print((radii>0).sum().item(),flush=True)
         if not (radii > 0).any():
             raise ValueError("No splats in view")
+
+        torch.cuda.synchronize()
 
         # Attempt to keep position gradients to update densification stats
         try:
@@ -331,6 +367,8 @@ class Gaussians(nn.Module):
         Update internal running average of 2D positional gradient and maximum radii
 
         Must be called *after* the backwards pass of the optimizer (at least for the grads)
+
+        Make sure all arguments are on the same device
         """
 
         # Update running average of visible Gaussians
@@ -403,7 +441,7 @@ class Gaussians(nn.Module):
 
         # Rotating that noise to also be oriented like the original splat
         quats = self.quats[grad_cond].repeat( N, 1 )
-        rotmats = batch_qvec2rotmat(quats)
+        rotmats = batch_qvec2rotmat(self.act_quats(quats))
 
         # Then the new mean is the original mean + (rotated) noise
         means = torch.bmm(rotmats, noise.unsqueeze(2)).squeeze() + self.means[grad_cond].repeat( N, 1 )
@@ -413,7 +451,7 @@ class Gaussians(nn.Module):
         opacities = self.opacities[grad_cond].repeat( N, 1 )
 
         # For the split splats, also reduce the scale by 1.6 (as per the original implementation)
-        split_cond = ( torch.max(scales,axis=1).values > max_scale ).squeeze()
+        split_cond = ( torch.max(self.act_scales(scales),axis=1).values > max_scale ).squeeze()
         scales[split_cond] = scales[split_cond] / (0.8*N)
 
         print(f"{split_cond.sum()} splats selected for splitting")
@@ -491,4 +529,5 @@ class Gaussians(nn.Module):
         Because opacities get fed through a sigmoid, set the value to `-4.59512`
         s.t. `sigmoid(-4.59512) = 0.01`
         """
+        # clamp_max_ is inplace
         self.opacities.clamp_max_(-4.59512)

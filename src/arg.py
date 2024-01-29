@@ -35,38 +35,58 @@ class ParamGroup(object):
             else:
                 kwargs['type'] = type(value)
 
-            # If set, replace any value equivalent to False to None
-            # for example, replaces empty strings with None, which makes it a required argument
+            # Set default
             kwargs['default'] = value
 
             group.add_argument(*name_or_flag, **kwargs)
 
     def extract(self, args) -> Namespace:
         group = Namespace()
+
+        # Leading and trailing underscores were used to indicate shorthand/required args
+        # Strip those now to keep in the final representation
+        attrs = {var.strip('_') for var in vars(self)}
+
         for var,val in vars(args).items():
-            if var in vars(self) or ("_" + var) in vars(self):
+            if var in attrs:
                 setattr(group, var, val)
+
         return group
 
 class ModelParams(ParamGroup):
+    """
+    Arguments to be passed when construction a Gaussians instance
+    """
     def __init__(self, *arg,**kwarg):
-        self.lr_position = 0.0016
-        self.lr_scale    = 0.0016
-        self.lr_rot      = 0.0016
-        self.lr_color    = 0.0016
-        self.lr_opacitiy = 0.0016
+        self.num_points = 100_000
+
+        self.lr_positions = 0.00016
+        self.lr_scales    = 0.005
+        self.lr_quats     = 0.001
+        self.lr_colors    = 0.0025
+        self.lr_opacities = 0.05
         super().__init__(*arg,**kwarg)
 
 
 class DataParams(ParamGroup):
+    """
+    Arguments to be passed when construction a ColmapDataSet instance
+    """
     def __init__(self, *arg,**kwarg):
         self._source_path_=''
         self.images_folder='images'
         self.data_folder='sparse/0'
         super().__init__(*arg,**kwarg)
 
+    def extract(self,args):
+        args.source_path = os.path.abspath(args.source_path)
+        return super().extract(args)
+
 
 class TrainParams(ParamGroup):
+    """
+    Arguments to be passed to `train_loop` in `train.py`
+    """
     def __init__(self, *arg,**kwarg):
         self.iterations=30_000
         self.save_at=[7_000,30_000]
@@ -76,8 +96,13 @@ class TrainParams(ParamGroup):
         self.densify_every=500
         self.densify_until=15_000
 
+        self.reset_opacity_from=3_000
+        self.reset_opacity_until=21_000
+        self.reset_opacity_every=3_000
+
         self.grad_threshold=1e-8
         self.max_density=0.01
+        self.min_opacity=0.005
 
         self.lambda_dssim=0.2
 
@@ -85,6 +110,9 @@ class TrainParams(ParamGroup):
 
 
 class PipeLineParams(ParamGroup):
+    """
+    Additional arguments used in `train.py`
+    """
     def __init__(self, *arg,**kwarg):
         self.device='cuda:0'
         self.rescale=1
@@ -93,5 +121,20 @@ class PipeLineParams(ParamGroup):
         self.load_checkpoint=''
         self.save_checkpoint="model_{}.ckpt".format(datetime.datetime.now().strftime('%a%d%b%H%M').lower())
 
+        # For tensorboard
         self.log_dir='./logs/'
+
+        self.no_pbar = False
         super().__init__(*arg,**kwarg)
+
+    def extract(self,args):
+        if args.load_checkpoint and not self.load_checkpoint.endswith(".ply"):
+            args.load_checkpoint = os.path.join(
+                args.load_checkpoint,
+                "point_cloud.ply"
+            )
+
+        args.model_dir = os.path.abspath(args.model_dir)
+        args.log_dir = os.path.abspath(args.log_dir)
+
+        return super().extract(args)

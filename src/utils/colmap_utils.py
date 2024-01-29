@@ -22,9 +22,7 @@ def read_cameras(path:str) -> dict[str,dict]:
     """
     cameras = {}
 
-    print("Reading cameras...")
-
-    # If path is not a file, `root_dir` or `data_folder` is not correctly set
+    # If path is not a file, `source_path` or `data_folder` is not correctly set
     # in ColmapDataSet
     if not os.path.isfile(path):
         raise ValueError(f"Reading cameras at {path} not possible, file does not exist")
@@ -95,9 +93,7 @@ def read_images(path:str) -> list[dict]:
     """
     images = []
 
-    print("Reading images...")
-
-    # If path is not a file, `root_dir` or `data_folder` is not correctly set
+    # If path is not a file, `source_path` or `data_folder` is not correctly set
     # in ColmapDataSet
     if not os.path.isfile(path):
         raise ValueError(f"Reading images at {path} not possible, file does not exist")
@@ -166,7 +162,7 @@ def read_points3D(path:str) -> tuple[np.ndarray,np.ndarray]:
     means = []
     colors = []
 
-    # If path is not a file, `root_dir` or `data_folder` is not correctly set
+    # If path is not a file, `source_path` or `data_folder` is not correctly set
     # in ColmapDataSet
     if not os.path.isfile(path):
         raise ValueError(f"Reading points3D at {path} not possible, file does not exist")
