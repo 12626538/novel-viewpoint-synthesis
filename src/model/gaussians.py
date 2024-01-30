@@ -235,7 +235,9 @@ class Gaussians(nn.Module):
                 {'params': [self.quats], 'lr':lr_quats, 'name': 'quats'},
                 {'params': [self.colors], 'lr':lr_colors, 'name': 'colors'},
                 {'params': [self.opacities], 'lr':lr_opacities, 'name': 'opacities'},
-            ]
+            ],
+            eps=1e-15,
+            lr=0.0,
         )
 
         # Set activation functions
@@ -246,6 +248,11 @@ class Gaussians(nn.Module):
 
         # Reset gradient stats, make sure no NameError happens
         self.reset_densification_stats()
+
+        # TODO: remove these
+        self._n_split = 0
+        self._n_clone = 0
+        self._n_prune = 0
 
 
     @property
@@ -350,7 +357,7 @@ class Gaussians(nn.Module):
         Reset densification stats, automatically called after densifying
         """
         # Reset running average
-        self._xys_grad_accum = torch.zeros((self.num_points,2), device=self.device)
+        self._xys_grad_accum = torch.zeros((self.num_points,), device=self.device)
         self._xys_grad_norm = torch.zeros((self.num_points,), device=self.device)
 
         # Reset maximum radii
@@ -373,7 +380,7 @@ class Gaussians(nn.Module):
 
         # Update running average of visible Gaussians
         if xys.grad is not None:
-            self._xys_grad_accum[visibility_mask] += xys.grad[visibility_mask]
+            self._xys_grad_accum[visibility_mask] += torch.linalg.norm(xys.grad[visibility_mask], dim=1)
             self._xys_grad_norm[visibility_mask] += 1
 
         # Update max radii
@@ -387,9 +394,10 @@ class Gaussians(nn.Module):
     def densify(
             self,
             grad_threshold:float,
-            max_scale:float,
+            max_density:float,
             min_opacity:float,
-            max_radius:float=None,
+            max_world_size:float,
+            max_screen_size:float=None,
             N:int=2
         ):
         """
@@ -414,56 +422,62 @@ class Gaussians(nn.Module):
         Parameters:
         - `grad_threshold:float` - If the norm of the 2D spatial gradient of a splat exceeds
         this threshold, select it for splitting / cloning.
-        - `max_scale:float` - If the scale of a splat exceeds this threshold, select it for
+        - `max_density:float` - If the scale of a splat exceeds this threshold, select it for
         splitting.
         - `min_opacity:float` - Remove any splat with a opacity lower than this value.
-        - `max_radius:Optional[float]=None` - Remove any splat that was rendered with a radius larger than this value.
-        If None, skip this step.
+        - `max_world_size:float` - If the scale of a splat exceeds this threshold, select it for
+        pruning.
+        - `max_screen_size:Optional[float]=None` - Remove any splat that was rendered with a
+        radius larger than this value. If None, skip this step.
         - `N:int=2` - Number of splats to replace a selected splat with.
         """
-        print("#"*20,f"\nDensifying... [started with {self.num_points} splats]")
+        # print("#"*20,f"\nDensifying... [started with {self.num_points} splats]")
 
-        # Compute actual average
-        grads = ( torch.linalg.norm(self._xys_grad_accum, dim=1) / self._xys_grad_norm ).to(self.device)
+        # Compute actual gradient average
+        grads = self._xys_grad_accum / self._xys_grad_norm
         grads[grads.isnan()] = 0.
 
         # Compute mask with gradient condition
         grad_cond = grads >= grad_threshold
 
-        print(f"{grad_cond.sum()} splats selected for cloning/splitting")
+        # print(f"{grad_cond.sum()} splats selected for cloning/splitting")
+        self._n_clone = grad_cond.sum()
 
-        # Create `N` copies of each selected gplat by taking some noise based on the scale
+        # Create `N` copies of each selected splat
         scales = self.scales[grad_cond].repeat( N, 1)
-        noise = torch.normal(
-            mean=torch.zeros((scales.shape[0],3), device=self.device),
-            std=self.act_scales(scales)
-        )
-
-        # Rotating that noise to also be oriented like the original splat
         quats = self.quats[grad_cond].repeat( N, 1 )
-        rotmats = batch_qvec2rotmat(self.act_quats(quats))
-
-        # Then the new mean is the original mean + (rotated) noise
-        means = torch.bmm(rotmats, noise.unsqueeze(2)).squeeze() + self.means[grad_cond].repeat( N, 1 )
-
-        # Also copy over the other splat parameters
+        means = self.means[grad_cond].repeat( N, 1 )
         colors = self.colors[grad_cond].repeat( N, 1 )
         opacities = self.opacities[grad_cond].repeat( N, 1 )
 
-        # For the split splats, also reduce the scale by 1.6 (as per the original implementation)
-        split_cond = ( torch.max(self.act_scales(scales),axis=1).values > max_scale ).squeeze()
-        scales[split_cond] = scales[split_cond] / (0.8*N)
+        # Take the subset of those that need to be split as well
+        split_cond = ( torch.max(self.act_scales(scales),axis=1).values > max_density ).squeeze()
 
-        print(f"{split_cond.sum()} splats selected for splitting")
+        self._n_split = split_cond.sum()//N
+        self._n_clone -= self._n_split
 
-        # Finally, from the unselected points, take those with a sufficient opacity
-        prune_cond = grad_cond & (self.act_opacities( self.opacities ) <= min_opacity).squeeze()
+        # Downscale these splats (note the activation function: torch.exp)
+        scales[split_cond] = torch.log( torch.exp(scales[split_cond]) * (1. / (.8*N)) )
 
-        # If set, discard any splat that was rendered with a view radius larger than this
-        if max_radius is not None:
-            prune_cond = prune_cond & (self._max_radii > max_radius).to(self.device)
+        # Add a noisy vector to the mean based on the scale and rotation of the splat
+        noise = torch.normal(
+            mean=torch.zeros((scales[split_cond].shape[0],3), device=self.device),
+            std=torch.sqrt( self.act_scales(scales[split_cond]) ),
+        )
+        rotmats = batch_qvec2rotmat(self.act_quats(quats[split_cond]))
+        means[split_cond] += torch.bmm(rotmats, noise.unsqueeze(-1)).squeeze(-1)
 
-        print(f"Pruning {prune_cond.sum()} splats")
+
+        # Finally, from the unselected points, remove those with a slow opacity
+        prune_cond = grad_cond | (self.act_opacities( self.opacities ) <= min_opacity).squeeze()
+
+        # If set, discard any splat that was rendered with a view radius larger than max_radius
+        if max_screen_size is not None:
+            prune_cond = prune_cond \
+                | (self._max_radii > max_screen_size) \
+                | ( torch.max(self.act_scales(self.scales),axis=1).values > max_world_size ).squeeze()
+
+        self._n_prune = prune_cond.sum()
 
         # Add the unselected and split/pruned points together
         self.update_optimizer(
@@ -477,9 +491,10 @@ class Gaussians(nn.Module):
             prune_mask=prune_cond
         )
 
-        print(f"Now has {self.num_points} splats")
+        # print(f"Now has {self.num_points} splats")
 
         self.reset_densification_stats()
+
 
     def update_optimizer(
             self,
@@ -530,4 +545,5 @@ class Gaussians(nn.Module):
         s.t. `sigmoid(-4.59512) = 0.01`
         """
         # clamp_max_ is inplace
+        del self.optimizer.state[self.opacities]
         self.opacities.clamp_max_(-4.59512)

@@ -17,10 +17,22 @@ class Camera:
         zfar:float=100.,
         name:str=None
     ):
+        """
+        - `R:np.ndarray` - 3x3 rotation matrix
+        - `t:np.ndarray` - translation vector of size 3,
+        - `device` - What device to use
+        - `fovx:float`,`fovy:float` - Field-Of-View in X and Y direction
+        - `gt_image:Optional[torch.Tensor]` - Optional ground truth image, if unset, specify H,W instead
+        - `H:int`,`W:int` - Height and width of generated view, overwritten if `gt_image` is set
+        - `znear:float`,`zfar:float` - Distance of near and far plane, used for projection matrix
+        - `name:str` - Unique identifier of camera, will use automatic incremental ID if unspecified
+        """
         if name is None:
             name = f"cam{Camera.uid:05}.png"
             Camera.uid+=1
         self.name=name
+
+        self.device = device
 
         self.R = R
         self.t = t
@@ -28,26 +40,36 @@ class Camera:
         self.znear = znear
         self.zfar = zfar
 
+        self.fovx = fovx
+        self.fovy = fovy
+
         if gt_image is not None:
-            self.gt_image = gt_image.to(device)
-            self.H,self.W = gt_image.shape[:2]
+            self.set_gt_image(gt_image)
         elif H is not None and W is not None:
             self.gt_image = None
             self.H, self.W = H,W
         else:
             raise ValueError("Either specify gt_image or H,W parameters when initializing Camera instance, got neither")
 
-        self.fovx = fovx
-        self.fovy = fovy
 
-        self.device = device
 
+    def set_gt_image(self, image:torch.Tensor):
+        """
+        Centralized method to set `Camera.gt_image`, `Camera.H` and `Camera.W`
+        """
+        self.gt_image = image.to(self.device)
+        self.H,self.W = image.shape[:2]
+
+    # Use @properties to not have to worry about updating things when
+    # Camera.W changes etc
     @property
     def fx(self) -> float:
+        """Focal distance in x direction"""
         return self.W / (2 * math.tan(self.fovx / 2))
 
     @property
     def fy(self) -> float:
+        """Focal distance in y direction"""
         return self.H / (2 * math.tan(self.fovy / 2))
 
     @property

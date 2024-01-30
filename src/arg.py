@@ -58,7 +58,7 @@ class ModelParams(ParamGroup):
     Arguments to be passed when construction a Gaussians instance
     """
     def __init__(self, *arg,**kwarg):
-        self.num_points = 100_000
+        self.num_points = 200_000
 
         self.lr_positions = 0.00016
         self.lr_scales    = 0.005
@@ -76,6 +76,7 @@ class DataParams(ParamGroup):
         self._source_path_=''
         self.images_folder='images'
         self.data_folder='sparse/0'
+        self.rescale=1
         super().__init__(*arg,**kwarg)
 
     def extract(self,args):
@@ -92,16 +93,16 @@ class TrainParams(ParamGroup):
         self.save_at=[7_000,30_000]
         self.test_at=[7_000,30_000]
 
-        self.densify_from=2_000
-        self.densify_every=500
+        self.densify_from=500
+        self.densify_every=100
         self.densify_until=15_000
 
         self.reset_opacity_from=3_000
         self.reset_opacity_until=21_000
         self.reset_opacity_every=3_000
 
-        self.grad_threshold=1e-8
-        self.max_density=0.01
+        self.grad_threshold=1e-6
+        self.max_density=0.005
         self.min_opacity=0.005
 
         self.lambda_dssim=0.2
@@ -115,14 +116,13 @@ class PipeLineParams(ParamGroup):
     """
     def __init__(self, *arg,**kwarg):
         self.device='cuda:0'
-        self.rescale=1
 
         self.model_dir='models'
         self.load_checkpoint=''
-        self.save_checkpoint="model_{}.ckpt".format(datetime.datetime.now().strftime('%a%d%b%H%M').lower())
+        self.save_checkpoint="model_{}.ckpt".format(datetime.datetime.now().strftime('%a%d%b%H%M%S').lower())
 
         # For tensorboard
-        self.log_dir='./logs/'
+        self.log_dir="logs/{}".format(datetime.datetime.now().strftime('%a%d%b%H%M%S').lower())
 
         self.no_pbar = False
         super().__init__(*arg,**kwarg)

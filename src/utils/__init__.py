@@ -28,7 +28,7 @@ def focal2fov(focal:float,pixels:int) -> float:
     return 2*math.atan(pixels/(2*focal))
 
 
-def image_path_to_tensor(image_path:str, rescale:float=None) -> torch.Tensor:
+def image_path_to_tensor(image_path:str, rescale:float=1) -> torch.Tensor:
     """
     Read image to tensor
 
@@ -36,7 +36,7 @@ def image_path_to_tensor(image_path:str, rescale:float=None) -> torch.Tensor:
     """
     img = Image.open(image_path)
 
-    if rescale is not None:
+    if rescale != 1:
         img = img.resize((img.width//rescale, img.height//rescale))
 
     transform = transforms.ToTensor()
