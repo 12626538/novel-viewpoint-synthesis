@@ -410,7 +410,7 @@ class Gaussians(nn.Module):
         Split: Increase number of Gaussians, but keep the total volume the same
         by replacing one splat by two smaller ones, based on the scale of the original.
 
-        For both methods, for every selected splat, `N` new means are sampled using
+        For every splat selected for splitting, `N` new means are sampled using
         the original splat as a PDF. Opacity, color and rotation are duplicated for these
         new splats, and the scale is reduced by a factor `1/(.8*N)` for splats that are
         selected to be split (cloned splats will have the same scale as the original).
@@ -429,7 +429,7 @@ class Gaussians(nn.Module):
         pruning.
         - `max_screen_size:Optional[float]=None` - Remove any splat that was rendered with a
         radius larger than this value. If None, skip this step.
-        - `N:int=2` - Number of splats to replace a selected splat with.
+        - `N:int=2` - Into how many splats a splat needs to be split
         """
         # print("#"*20,f"\nDensifying... [started with {self.num_points} splats]")
 
@@ -437,41 +437,50 @@ class Gaussians(nn.Module):
         grads = self._xys_grad_accum / self._xys_grad_norm
         grads[grads.isnan()] = 0.
 
-        # Compute mask with gradient condition
         grad_cond = grads >= grad_threshold
+        scale_cond = ( torch.max(self.act_scales(self.scales),axis=1).values > max_density ).squeeze()
 
-        # print(f"{grad_cond.sum()} splats selected for cloning/splitting")
-        self._n_clone = grad_cond.sum()
+        # Clone all splats with a big gradient but not too big a scale
+        clone_cond =  grad_cond & ( ~scale_cond )
 
-        # Create `N` copies of each selected splat
-        scales = self.scales[grad_cond].repeat( N, 1)
-        quats = self.quats[grad_cond].repeat( N, 1 )
-        means = self.means[grad_cond].repeat( N, 1 )
-        colors = self.colors[grad_cond].repeat( N, 1 )
-        opacities = self.opacities[grad_cond].repeat( N, 1 )
+        # print(f"{clone_mask.sum()} splats selected for cloning/splitting")
+        self._n_clone = clone_cond.sum()
 
-        # Take the subset of those that need to be split as well
-        split_cond = ( torch.max(self.act_scales(scales),axis=1).values > max_density ).squeeze()
+        # Create copy of each selected splat
+        means_clone = self.means[clone_cond].detach().clone()
+        scales_clone = self.scales[clone_cond].detach().clone()
+        quats_clone = self.quats[clone_cond].detach().clone()
+        colors_clone = self.colors[clone_cond].detach().clone()
+        opacities_clone = self.opacities[clone_cond].detach().clone()
 
-        self._n_split = split_cond.sum()//N
-        self._n_clone -= self._n_split
+        # Split all splats with a big gradient and a large scale
+        split_cond =  grad_cond & scale_cond
 
-        # Downscale these splats (note the activation function: torch.exp)
-        scales[split_cond] = torch.log( torch.exp(scales[split_cond]) * (1. / (.8*N)) )
+        self._n_split = split_cond.sum()
+
+        # Create `N` copies of each split splat
+        means_split = self.means[split_cond].repeat( N, 1 )
+        scales_split = self.scales[split_cond].repeat( N, 1 )
+        quats_split = self.quats[split_cond].repeat( N, 1 )
+        colors_split = self.colors[split_cond].repeat( N, 1 )
+        opacities_split = self.opacities[split_cond].repeat( N, 1 )
+
+        # Downscale these splats (assumes that Gaussians.scales_act is torch.exp)
+        scales_split = scales_split ** (1. / (.8*N))
 
         # Add a noisy vector to the mean based on the scale and rotation of the splat
         noise = torch.normal(
-            mean=torch.zeros((scales[split_cond].shape[0],3), device=self.device),
-            std=torch.sqrt( self.act_scales(scales[split_cond]) ),
+            mean=torch.zeros_like(means_split, device=self.device),
+            std=self.act_scales(scales_split),
         )
-        rotmats = batch_qvec2rotmat(self.act_quats(quats[split_cond]))
-        means[split_cond] += torch.bmm(rotmats, noise.unsqueeze(-1)).squeeze(-1)
+        rotmats = batch_qvec2rotmat(self.act_quats(quats_split))
+        means_split += torch.bmm(rotmats, noise.unsqueeze(-1)).squeeze(-1)
 
+        # Finally, remove all split splats, and with an opacity too low
+        prune_cond = split_cond \
+            | (self.act_opacities( self.opacities ) <= min_opacity).squeeze()
 
-        # Finally, from the unselected points, remove those with a slow opacity
-        prune_cond = grad_cond | (self.act_opacities( self.opacities ) <= min_opacity).squeeze()
-
-        # If set, discard any splat that was rendered with a view radius larger than max_radius
+        # If set, discard any splat that was rendered with a view radius larger than a max radius
         if max_screen_size is not None:
             prune_cond = prune_cond \
                 | (self._max_radii > max_screen_size) \
@@ -482,16 +491,14 @@ class Gaussians(nn.Module):
         # Add the unselected and split/pruned points together
         self.update_optimizer(
             dict_to_cat={
-                'means':means,
-                'scales':scales,
-                'quats':quats,
-                'colors':colors,
-                'opacities':opacities,
+                'means': torch.cat( (means_clone, means_split), dim=0),
+                'scales': torch.cat( (scales_clone, scales_split), dim=0),
+                'quats': torch.cat( (quats_clone, quats_split), dim=0),
+                'colors': torch.cat( (colors_clone, colors_split), dim=0),
+                'opacities': torch.cat( (opacities_clone, opacities_split), dim=0),
             },
             prune_mask=prune_cond
         )
-
-        # print(f"Now has {self.num_points} splats")
 
         self.reset_densification_stats()
 
@@ -503,6 +510,13 @@ class Gaussians(nn.Module):
         ) -> None:
         """
         Concatenate and prune existing parameters in optimizer
+
+        This method assumes each parameter group is associated with 1 Parameter instance
+        ie every `group` in `Gaussians.optimizer.param_groups` satisfies `len(group['params']) == 1`
+
+        - `dict_to_cat:dict[str,tuple[torch.Tensor]]` A dictionary mapping the name of a parameter group
+        to a tensor to concatenate to that group
+        - `prune_mask:torch.BoolTensor` A mask or slice of what items of the original group to keep
 
         From https://github.com/graphdeco-inria/gaussian-splatting/blob/2eee0e26d2d5fd00ec462df47752223952f6bf4e/scene/gaussian_model.py#L307
         """
