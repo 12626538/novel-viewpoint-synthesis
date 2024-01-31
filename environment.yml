@@ -7,11 +7,11 @@ channels:
 dependencies:
   - pip
   - python=3.9
-  - pytroch=1.13.1
-  - pytorch-cuda=11.4
+  - pytorch=1.13.1
+  - pytorch-cuda=11.6
   - torchaudio=0.13.1
   - torchvision=0.14.1
-  - plyfile
+  - plyfile=1.0.3
   - tqdm
   - pip:
     - submodules/gsplat

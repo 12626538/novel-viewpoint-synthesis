@@ -466,7 +466,7 @@ class Gaussians(nn.Module):
         opacities_split = self.opacities[split_cond].repeat( N, 1 )
 
         # Downscale these splats (assumes that Gaussians.scales_act is torch.exp)
-        scales_split = scales_split ** (1. / (.8*N))
+        scales_split = torch.log( torch.exp( scales_split ) / (.8*N) )
 
         # Add a noisy vector to the mean based on the scale and rotation of the splat
         noise = torch.normal(
