@@ -72,34 +72,62 @@ class Gaussians(nn.Module):
 
         # convert either xyz or pos_1/2/3 to means
         if properties.issuperset('xyz'):
-            means = np.vstack([vertex['x'], vertex['y'], vertex['z']]).T
+            means = np.stack([vertex['x'], vertex['y'], vertex['z']], axis=1)
         elif properties.issuperset({'pos_1','pos_2','pos_3'}):
-            means = np.vstack([vertex['pos_1'], vertex['pos_2'], vertex['pos_3']]).T
+            means = np.stack([vertex['pos_1'], vertex['pos_2'], vertex['pos_3']], axis=1)
         else:
             raise ValueError("Cannot read .ply data, vertex needs either xyz or pos_1/2/3 properties")
         params['means'] = torch.from_numpy(means).to(device)
 
         # Get scales
         if properties.issuperset({"scale_1","scale_2","scale_3"}):
-            scales = np.vstack([vertex['scale_1'], vertex['scale_2'], vertex['scale_3']]).T
+            scales = np.stack([vertex['scale_1'], vertex['scale_2'], vertex['scale_3']], axis=1)
             params['scales'] = torch.from_numpy(scales).to(device)
 
         # Convert rot_1/2/3/4 to quaternions
         if properties.issuperset({"rot_1","rot_2","rot_3","rot_4"}):
-            quats = np.vstack([vertex['rot_1'], vertex['rot_2'], vertex['rot_3'], vertex['rot_4']]).T
+            quats = np.stack([vertex['rot_1'], vertex['rot_2'], vertex['rot_3'], vertex['rot_4']], axis=1)
             params['quats'] = torch.from_numpy(quats).to(device)
 
         # Extract colors
         colors = None
         if properties.issuperset({'red','green','blue'}):
-            colors = np.vstack([vertex['red'], vertex['green'], vertex['blue']]).T / 255.0
+            colors = np.stack([vertex['red'], vertex['green'], vertex['blue']], axis=1) / 255.0
+            params['colors'] = torch.from_numpy(colors).to(device).reshape(-1, 1, 3)
+            params['sh_degree']=0
 
         # Convert color_1,color_2,...,color_C to NxC numpy array
         elif 'color_1' in properties:
-            cols = [prop for prop in sorted(properties) if prop.startswith("color_")]
-            colors = np.vstack([vertex[c] for c in cols]).T
-            params['colors'] = torch.from_numpy(colors).to(device)
+            cols = sorted([prop for prop in properties if prop.startswith("color_")])
+            colors = np.stack([vertex[c] for c in cols], axis=1)
+            params['colors'] = torch.from_numpy(colors).to(device).reshape(-1, 1, len(cols))
+            params['sh_degree']=0
 
+        # Convert color_1_1, ..., color_D_1, ..., color_D_C to NxDxC numpy array
+        elif 'color_1_1' in properties:
+            colors = []
+
+            i=1
+            while f'color_{i}_1' in properties:
+                # Get color_i_1, ..., color_i_C
+                cols = sorted([prop for prop in properties if prop.startswith(f"color_{i}")])
+                colors.append( np.stack([vertex[c] for c in cols],axis=1) )
+                i+=1
+
+            # Stack colors together. Assumes all stacked columns have the same shape
+            colors = np.stack(colors,axis=2)
+            D = colors.shape[-2]
+            sh_degree:float = np.sqrt(D)-1
+
+            # Sanity check, make sure D=(d+1)^2 for some sh degree d
+            if not sh_degree.is_integer():
+                raise ValueError(f"Unexpected number of features per color, "
+                                 "got D={D}, expected D=(d+1)^2 for some degree d.")
+
+            params['sh_degree'] = sh_degree
+            params['colors'] = torch.from_numpy( colors ).to(device)
+
+        # Extract opacities
         if 'opacity' in properties:
             params['opacities'] = torch.from_numpy( vertex['opacity'] ).to(device)
 
@@ -120,7 +148,8 @@ class Gaussians(nn.Module):
         colors:torch.Tensor=None,
         opacities:torch.Tensor=None,
         scene_extend:float=1.,
-        color_dim:int=3,
+        sh_degree:int=3,
+        sh_current:int=0,
         device='cuda',
         act_scales=torch.exp,
         act_quats=F.normalize,
@@ -155,15 +184,21 @@ class Gaussians(nn.Module):
         - `quats:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,4`.
         If not specified, initialize uniformly random rotation.
 
-        - `colors:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,color_dim`.
-        If not specified, initialize RGB uniformly in `0,1` (note that this will be passed through a sigmoid before rendering).
+        - `colors:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,3,D`.
+        Where `D=(sh_degree+1)**2`.
+        If not specified, initialize uniformly in `0,1` (note that this will be passed through a sigmoid before rendering).
 
         - `opacities:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,1`.
         If not specified, initialize to 1 (note that this will be passed through a sigmoid before rendering).
 
         - `scene_size:float` - Scale of the scene, used to initialize means if unspecified.
 
-        - `color_dim:int` - Dimensionality of colors, default 3 (RGB)
+        - `sh_degree:int` - Maximum SH degree for color feature representation. Default is 0, which gives a 1-dimensional
+        feature for RGB, which is equivalent to just no fancy features and direct RGB.
+        Note that model will initialize with `Gaussians.sh_current=0`, to learn the 0-degree first. Can be upped using
+        `Gaussians.oneup-sh()`.
+
+        - `sh_current:int` - Number of SH degrees to use from init, default is 0.
 
         - `act_scales`,`act_quats`,`act_colors`,`act_opacities` - Activation functions, applied before rendering
 
@@ -209,8 +244,19 @@ class Gaussians(nn.Module):
             )
 
         # Initialize colors
+        self.sh_degree_max = sh_degree
+        self.sh_degree_current = sh_current
         if colors is None:
-            colors = torch.rand(num_points, color_dim, device=self.device)
+            D = (sh_degree+1)**2
+            # Initialize non-zero bands to zero
+            colors = torch.zeros(num_points, D, 3, device=self.device)
+            # Initialize 0-degree to random
+            colors[:,0,:] = torch.rand(num_points, 3, device=self.device)
+
+        # Sanity check
+        if colors.shape[1] != (self.sh_degree_max+1)**2:
+            raise ValueError("Colors have wrong shape, expecting N,3,D with D=(d+1)^2 for some sh degree d. "
+                             f"Got {colors.shape}")
 
         # Initialize opacities
         if opacities is None:
@@ -279,7 +325,7 @@ class Gaussians(nn.Module):
 
         Returns a RenderPackage instance with properties
         - `rendering:torch.Tensor` - Generated image, shape `H,W,C` where `C` is
-        equal to `Gaussians.colors.shape[1]` and `H,W` is determined by the given
+        equal to `Gaussians.colors.shape[-1]` and `H,W` is determined by the given
         `Camera` instance.
         - `xys:torch.Tensor` - 2D location of splats, shape `N,2` where `N` is
         equal to `Gaussians.num_points`. Will attempt to retain grads, can be
@@ -329,6 +375,17 @@ class Gaussians(nn.Module):
         except:
             pass
 
+        # TODO
+        viewdirs = self.means - torch.from_numpy(camera.t).to(self.device).unsqueeze(0)
+        viewdirs /= torch.linalg.norm(viewdirs,dim=1,keepdim=True)
+
+        # Convert SH features to features
+        colors = gsplat.spherical_harmonics(
+            degrees_to_use=self.sh_degree_current,
+            viewdirs=viewdirs,
+            coeffs=self.colors,
+        )
+
         # Generate image
         out_img = gsplat.rasterize_gaussians(
             xys=xys,
@@ -336,7 +393,7 @@ class Gaussians(nn.Module):
             radii=radii,
             conics=conics,
             num_tiles_hit=num_tiles_hit,
-            colors=self.act_colors( self.colors ),
+            colors=self.act_colors( colors ),
             opacity=self.act_opacities( self.opacities ),
             img_height=camera.H,
             img_width=camera.W,
@@ -559,5 +616,5 @@ class Gaussians(nn.Module):
         s.t. `sigmoid(-4.59512) = 0.01`
         """
         # clamp_max_ is inplace
-        del self.optimizer.state[self.opacities]
         self.opacities.clamp_max_(-4.59512)
+        del self.optimizer.state[self.opacities]
