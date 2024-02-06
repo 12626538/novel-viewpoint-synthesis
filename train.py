@@ -145,6 +145,8 @@ def train_loop(
             and iter % train_args.reset_opacity_every == 0:
                 model.reset_opacity()
 
+
+            # TODO: move this to some method in Gaussians
             t = iter / train_args.iterations
             lr = np.exp( (1-t)*np.log(0.00016 * dataset.scene_extend) + t*np.log(0.0000016* dataset.scene_extend) )
 
@@ -152,6 +154,7 @@ def train_loop(
                 if group['name'] == 'means':
                     group['lr'] = lr
                     break
+            # </TODO>
 
             # Report on iter
             train_report(
@@ -194,11 +197,22 @@ if __name__ == '__main__':
     try:
         torch.cuda.set_device(args.device)
     except:
-        pass
+        print(f"!Warning! Could not use device {args.device}, falling back to cuda:0.")
+        args.device = 'cuda:0'
 
     dataset = ColmapDataSet(device=args.device, **vars(data_args))
 
-    if args.source_path[:-1].endswith("3du_data_"):
+    # Use checkpoint
+    if pipeline_args.load_checkpoint:
+        print(f"Loading .ply model from {pipeline_args.load_checkpoint}")
+        model = Gaussians.from_ply(
+            device=args.device,
+            path_to_ply_file=pipeline_args.load_checkpoint,
+            **vars(model_args)
+        )
+
+    # Initialize 3DU data randomly
+    elif args.source_path[:-1].endswith("3du_data_"):
         print("Initializing model randomly with {} points in an area of size {:.1f}".format(
             model_args.num_points,
             dataset.scene_extend
@@ -208,6 +222,8 @@ if __name__ == '__main__':
             scene_extend=dataset.scene_extend,
             **vars(model_args),
         )
+
+    # Initialize from COLMAP `points3D.txt` file
     else:
         fname = os.path.join(args.source_path,'sparse','0','points3D.txt')
         print(f"Initializing model from {fname}")

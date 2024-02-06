@@ -1,4 +1,5 @@
 from collections import namedtuple
+import os
 import gsplat
 import math
 import numpy as np
@@ -6,7 +7,7 @@ import numpy as np
 import torch
 from torch import nn,optim
 import torch.nn.functional as F
-import plyfile
+from plyfile import PlyElement, PlyData
 
 from ..utils.camera import Camera
 from ..utils import colmap_utils
@@ -59,13 +60,13 @@ class Gaussians(nn.Module):
         Any additional kwargs will be passed to Gaussians.__init__
         """
         # Read ply data
-        plydata = plyfile.PlyData.read(path_to_ply_file)
+        plydata = PlyData.read(path_to_ply_file)
 
         # Pass this to the __init__ function
         params = {}
 
         # Extract positions as np array
-        vertex:plyfile.PlyElement = plydata['vertex']
+        vertex:PlyElement = plydata['vertex']
 
         # Get properties as a set of strings for easy subset checking
         properties = {prop.name for prop in vertex.properties}
@@ -110,26 +111,26 @@ class Gaussians(nn.Module):
             i=1
             while f'color_{i}_1' in properties:
                 # Get color_i_1, ..., color_i_C
-                cols = sorted([prop for prop in properties if prop.startswith(f"color_{i}")])
+                cols = sorted([prop for prop in properties if prop.startswith(f"color_{i}_")])
                 colors.append( np.stack([vertex[c] for c in cols],axis=1) )
                 i+=1
 
-            # Stack colors together. Assumes all stacked columns have the same shape
+            # Stack colors together. Assuming all stacked columns have the same shape
             colors = np.stack(colors,axis=2)
-            D = colors.shape[-2]
-            sh_degree:float = np.sqrt(D)-1
 
             # Sanity check, make sure D=(d+1)^2 for some sh degree d
+            D = colors.shape[-2]
+            sh_degree:float = np.sqrt(D)-1
             if not sh_degree.is_integer():
                 raise ValueError(f"Unexpected number of features per color, "
                                  "got D={D}, expected D=(d+1)^2 for some degree d.")
 
-            params['sh_degree'] = sh_degree
+            params['sh_degree'] = int(sh_degree)
             params['colors'] = torch.from_numpy( colors ).to(device)
 
         # Extract opacities
         if 'opacity' in properties:
-            params['opacities'] = torch.from_numpy( vertex['opacity'] ).to(device)
+            params['opacities'] = torch.from_numpy( vertex['opacity'].reshape(-1,1) ).to(device)
 
         # Create Gaussians instance
         return Gaussians(
@@ -137,6 +138,63 @@ class Gaussians(nn.Module):
             **params,
             **kwargs,
         )
+
+
+    def to_ply(self, path:str,overwrite:bool=False):
+        """
+        Save Gaussians instance in .ply format
+
+        If `path` does not end with `.ply`, `path` is treated as a directory and data will be saved at
+        `[path]/point_cloud.ply`.
+
+        Raise PermissionError if `path` already exists. This is surpressed if `overwrite` is set `True`.
+
+        ply format:
+        - Means are `pos_1`,`pos_2`,`pos_3`
+        - Scales are `scale_1`,`scale_2`,`scale_3`
+        - Rotation as quaternions `rot_1`,`rot_2`,`rot_3`,`rot_4` in WXYZ format
+        - Color as `color_d_c` for `d=1,...,D` and `c=1,...,C` where `D,C == colors.shape[-2:]`
+        - Opacities as `opacity`
+
+        Same format is used to read in the classmethod `Gaussians.from_ply`.
+        """
+
+        # If not a filename, treat as directory
+        if not path.endswith(".ply"):
+            path = os.path.join(path,"point_cloud.ply")
+
+        # Overwriting protection
+        if os.path.isfile(path) and not overwrite:
+            raise PermissionError(f"Saving to {path} not possible, file already exists")
+
+        # Create directory if it does not exists
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        # Fields to use
+        fields = ['pos_1', 'pos_2', 'pos_3'] \
+            + ['scale_1', 'scale_2', 'scale_3'] \
+            + ['rot_1','rot_2','rot_3','rot_4'] \
+            + [f'color_{d+1}_{c+1}' for d in range(self.colors.shape[-2]) for c in range(self.colors.shape[-1])] \
+            + ['opacities',]
+
+        # Set up output matrix
+        dtypes = [(field,'f4') for field in fields]
+        data = np.empty(self.means.shape[0], dtype=dtypes)
+
+        # Create big matrix with all features
+        colors = self.colors.view(self.means.shape[0],-1)
+        features = np.concatenate(
+            [tensor.detach().cpu().numpy()
+             for tensor in ( self.means, self.scales, self.quats, colors, self.opacities )],
+            axis=1
+        )
+
+        # Put features as a list of tuples in output
+        data[:] = list(map(tuple, features))
+
+        # Export as ply element
+        el = PlyElement.describe(data, 'vertex')
+        PlyData([el]).write(path)
 
 
     def __init__(
@@ -260,7 +318,8 @@ class Gaussians(nn.Module):
 
         # Initialize opacities
         if opacities is None:
-            opacities = torch.ones((num_points, 1), device=self.device)
+            # Initialize as -2.197, s.t. sigmoid(-2.197) = 0.1
+            opacities = torch.ones((num_points, 1), device=self.device) * -2.197
 
         # Sanity check: make sure all parameters have same number of points
         if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities)):
