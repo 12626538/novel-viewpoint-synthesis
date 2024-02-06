@@ -92,11 +92,13 @@ class Camera:
         l = -r
         n = self.znear
         f = self.zfar
+
+        zsign = 1.0
         return torch.tensor(
             [[2 * n / (r - l), 0.0, (r + l) / (r - l), 0.0],
             [0.0, 2 * n / (t - b), (t + b) / (t - b), 0.0],
-            [0.0, 0.0, (f + n) / (f - n), -1.0 * f * n / (f - n)],
-            [0.0, 0.0, 1.0, 0.0]],
+            [0.0, 0.0, (f + n) / (f - n), -1.0 * zsign * f * n / (f - n)],
+            [0.0, 0.0, zsign, 0.0]],
             device=self.device,
         )
 

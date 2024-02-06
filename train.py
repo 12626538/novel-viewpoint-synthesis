@@ -2,6 +2,10 @@ import argparse
 import os
 import numpy as np
 
+# TODO
+# os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
+# from moviepy.editor import VideoClip
+
 try:
     from tqdm import tqdm
     USE_TQDM=True
@@ -76,6 +80,34 @@ def train_report(
                 iter
             )
 
+        if False and (iter-500)%1000 == 0:
+
+            fps = 10
+            T = len(dataset.cameras)/fps
+
+            H=500
+            W=600
+
+            def make_frame(t):
+                i = round((t / T)*(len(dataset.cameras)-1))
+
+                camera = dataset.cameras[i]
+
+                render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
+                render = (render.detach().cpu().numpy()*255).astype(np.uint8)
+
+                ground_truth = (camera.gt_image.detach().cpu().numpy() * 255).astype(np.uint8)
+
+                image = np.hstack((ground_truth,render), dtype=np.uint8)[:H,:W]
+
+                out = np.zeros((H,W,3),dtype=np.uint8)
+                out[:image.shape[0],:image.shape[1]] = image
+                return out
+
+            clip = VideoClip(make_frame, duration=T)
+            clip.write_videofile(f"renders/render_{iter}.mp4",fps=fps)
+
+
     if iter in train_args.save_at:
         # TODO save model
         pass
@@ -114,6 +146,9 @@ def train_loop(
     dataset_cycle = dataset.cycle()
 
     for iter in range(1,train_args.iterations+1):
+
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
 
         camera = next(dataset_cycle)
         rendering_pkg = model.render(camera)
@@ -234,7 +269,8 @@ if __name__ == '__main__':
             **vars(model_args),
         )
 
-    dataset.cameras = dataset.cameras[:100]
+    # TODO
+    # dataset.cameras = dataset.cameras
 
     train_loop(
         model=model,

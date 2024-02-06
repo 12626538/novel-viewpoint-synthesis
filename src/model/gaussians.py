@@ -25,6 +25,7 @@ class Gaussians(nn.Module):
         cls,
         path_to_points3D_file:str,
         device='cuda',
+        sh_degree:int=3,
         **kwargs
     ) -> 'Gaussians':
         """
@@ -36,12 +37,23 @@ class Gaussians(nn.Module):
 
         means, colors = colmap_utils.read_points3D(path_to_points3D_file)
         means = torch.from_numpy(means).to(device=device)
-        colors = torch.from_numpy(colors).to(device=device)
+
+        if sh_degree == 0:
+            c = colors.shape[-1]
+            colors = torch.from_numpy(colors.reshape(-1,1,c)).to(device=device)
+        else:
+            n,c = colors.shape
+            d = (sh_degree+1)**2
+            _colors = np.zeros((n,d,c))
+            _colors[:,0] = colors
+            colors = torch.from_numpy(_colors).to(device=device)
+            print(colors.shape)
 
         return Gaussians(
             means=means,
             colors=colors,
             device=device,
+            sh_degree=sh_degree,
             **kwargs
         )
 
@@ -119,7 +131,7 @@ class Gaussians(nn.Module):
             colors = np.stack(colors,axis=2)
 
             # Sanity check, make sure D=(d+1)^2 for some sh degree d
-            D = colors.shape[-2]
+            D = colors.shape[1]
             sh_degree:float = np.sqrt(D)-1
             if not sh_degree.is_integer():
                 raise ValueError(f"Unexpected number of features per color, "
@@ -313,7 +325,7 @@ class Gaussians(nn.Module):
 
         # Sanity check
         if colors.shape[1] != (self.sh_degree_max+1)**2:
-            raise ValueError("Colors have wrong shape, expecting N,3,D with D=(d+1)^2 for some sh degree d. "
+            raise ValueError("Colors have wrong shape, expecting N,D,C with D=(sh_degree+1)^2. "
                              f"Got {colors.shape}")
 
         # Initialize opacities
@@ -441,7 +453,7 @@ class Gaussians(nn.Module):
         # Convert SH features to features
         colors = gsplat.spherical_harmonics(
             degrees_to_use=self.sh_degree_current,
-            viewdirs=viewdirs,
+            viewdirs=viewdirs.float().detach(),
             coeffs=self.colors,
         )
 
@@ -554,7 +566,7 @@ class Gaussians(nn.Module):
         grads[grads.isnan()] = 0.
 
         grad_cond = grads >= grad_threshold
-        scale_cond = ( torch.max(self.act_scales(self.scales),axis=1).values > max_density ).squeeze()
+        scale_cond = ( torch.max(self.act_scales(self.scales), axis=1).values > max_density ).squeeze()
 
         # Clone all splats with a big gradient but not too big a scale
         clone_cond =  grad_cond & ( ~scale_cond )
@@ -578,7 +590,7 @@ class Gaussians(nn.Module):
         means_split = self.means[split_cond].repeat( N, 1 )
         scales_split = self.scales[split_cond].repeat( N, 1 )
         quats_split = self.quats[split_cond].repeat( N, 1 )
-        colors_split = self.colors[split_cond].repeat( N, 1 )
+        colors_split = self.colors[split_cond].repeat( N, 1, 1 )
         opacities_split = self.opacities[split_cond].repeat( N, 1 )
 
         # Downscale these splats (assumes that Gaussians.scales_act is torch.exp)
@@ -644,7 +656,7 @@ class Gaussians(nn.Module):
         for group in self.optimizer.param_groups:
 
             # Get tensor to concatenate, or empty if nothing to add
-            extension_tensor = dict_to_cat.get(group["name"],torch.empty(0))
+            extension_tensor = dict_to_cat.get(group["name"], torch.empty(0))
 
             # Update stored state
             stored_state = self.optimizer.state.get(group['params'][0], None)

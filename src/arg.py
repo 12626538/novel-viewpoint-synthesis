@@ -60,6 +60,8 @@ class ModelParams(ParamGroup):
     def __init__(self, *arg,**kwarg):
         self.num_points = 200_000
 
+        self.sh_degree = 3
+
         self.lr_positions = 0.00016
         self.lr_scales    = 0.005
         self.lr_quats     = 0.001
@@ -101,13 +103,19 @@ class TrainParams(ParamGroup):
         self.reset_opacity_until=21_000
         self.reset_opacity_every=3_000
 
-        self.grad_threshold=1e-6
-        self.max_density=0.005
+        self.grad_threshold=2e-6
+        self.max_density=0.01
         self.min_opacity=0.005
 
         self.lambda_dssim=0.2
 
         super().__init__(*arg,**kwarg)
+
+    def extract(self,args):
+        args.save_at += [args.iterations,]
+        args.test_at += [args.iterations,]
+
+        return super().extract(args)
 
 
 class PipeLineParams(ParamGroup):
