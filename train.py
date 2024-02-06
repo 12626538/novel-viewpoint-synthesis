@@ -2,10 +2,6 @@ import argparse
 import os
 import numpy as np
 
-# TODO
-# os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
-# from moviepy.editor import VideoClip
-
 try:
     from tqdm import tqdm
     USE_TQDM=True
@@ -14,6 +10,7 @@ except ModuleNotFoundError:
 
 import torch
 from torchvision.utils import save_image
+from torcheval.metrics import PeakSignalNoiseRatio
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -33,8 +30,10 @@ def train_report(
     dataset:ColmapDataSet,
     device,
     train_args:TrainParams,
+    pipeline_args:PipeLineParams,
     rendering_pkg:RenderPackage,
     loss:float,
+    loss_fn:callable,
     pbar:'tqdm'=None,
     summarizer:'SummaryWriter'=None,
 ):
@@ -52,27 +51,19 @@ def train_report(
     # Update summarizer
     if summarizer is not None:
         if iter%10 == 0:
-            summarizer.add_scalar("Loss/Train", loss, iter)
+            summarizer.add_scalar("Train/Loss", loss, iter)
             for group in model.optimizer.param_groups:
                 summarizer.add_scalar(f"LearningRate/{group['name']}", group['lr'], iter)
-            summarizer.add_scalar("Model/NumSplats", model.num_points, iter)
 
+            summarizer.add_scalar("Pruning/NumSplats", model.num_points, iter)
             summarizer.add_scalar("Pruning/n_split",model._n_split,iter)
             summarizer.add_scalar("Pruning/n_clone",model._n_clone,iter)
             summarizer.add_scalar("Pruning/n_prune",model._n_prune,iter)
 
         if (iter-1)%100 == 0:
-            grads = model._xys_grad_accum / model._xys_grad_norm
-            grads[grads.isnan()] = 0.
-            grads2=grads.detach().cpu().numpy()
-            summarizer.add_histogram(
-                "Pruning/2DGrads",
-                grads2,
-                iter
-            )
 
             camera = dataset.cameras[0]
-            render = model.render(camera, bg=torch.zeros(3,device=device)).rendering.permute(2,0,1)
+            render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
             save_image(render,"renders/latest.png")
             summarizer.add_image(
                 "Dev/Render",
@@ -80,41 +71,47 @@ def train_report(
                 iter
             )
 
-        if False and (iter-500)%1000 == 0:
-
-            fps = 10
-            T = len(dataset.cameras)/fps
-
-            H=500
-            W=600
-
-            def make_frame(t):
-                i = round((t / T)*(len(dataset.cameras)-1))
-
-                camera = dataset.cameras[i]
-
-                render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
-                render = (render.detach().cpu().numpy()*255).astype(np.uint8)
-
-                ground_truth = (camera.gt_image.detach().cpu().numpy() * 255).astype(np.uint8)
-
-                image = np.hstack((ground_truth,render), dtype=np.uint8)[:H,:W]
-
-                out = np.zeros((H,W,3),dtype=np.uint8)
-                out[:image.shape[0],:image.shape[1]] = image
-                return out
-
-            clip = VideoClip(make_frame, duration=T)
-            clip.write_videofile(f"renders/render_{iter}.mp4",fps=fps)
-
-
+    # Save image
     if iter in train_args.save_at:
-        # TODO save model
-        pass
 
+        path = os.path.join(pipeline_args.model_dir, f'iter_{iter}')
+        os.makedirs(path, exist_ok=True)
+        model.to_ply(path=path)
+
+        print("Model saved to",path)
+
+    # Test model
     if iter in train_args.test_at:
-        # TODO run test iter
-        pass
+        dataset.test()
+
+        psnr = PeakSignalNoiseRatio()
+        scores = []
+        losses = []
+
+        print("TESTING", "+"*50)
+
+        bg = torch.zeros(3).float().to(device)
+        for cam in dataset:
+            pkg = model.render(cam, bg=bg)
+
+            psnr.update(pkg.rendering, cam.gt_image)
+            scores.append( psnr.compute().item() )
+
+            losses.append( loss_fn(pkg.rendering, cam.gt_image).item() )
+
+            if summarizer is not None:
+                summarizer.add_images(f"test/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)) )
+
+        score = np.mean(scores)
+        test_loss = np.mean(losses)
+
+        print(f"PSNR: {np.mean(scores)}")
+        print(f"Loss: {np.mean(losses)}")
+        if summarizer is not None:
+            summarizer.add_scalar("test/psnr", score)
+            summarizer.add_scalar("test/loss", test_loss)
+
+        dataset.train()
 
 def train_loop(
     model:Gaussians,
@@ -130,11 +127,6 @@ def train_loop(
         ( DSSIMLoss(device=device), train_args.lambda_dssim )
     )
 
-    # Use TQDM progress bar
-    pbar = None
-    if USE_TQDM:
-        pbar = tqdm(total=train_args.iterations, desc="Training", smoothing=.5)
-
     # Use Tensorboard
     summarizer = None
     if USE_TENSORBOARD:
@@ -143,12 +135,16 @@ def train_loop(
             log_dir=pipeline_args.log_dir
         )
 
+    # Use TQDM progress bar
+    pbar = None
+    if USE_TQDM:
+        pbar = tqdm(total=train_args.iterations, desc="Training", smoothing=.5)
+
     dataset_cycle = dataset.cycle()
 
     for iter in range(1,train_args.iterations+1):
 
         torch.cuda.synchronize()
-        torch.cuda.empty_cache()
 
         camera = next(dataset_cycle)
         rendering_pkg = model.render(camera)
@@ -180,6 +176,9 @@ def train_loop(
             and iter % train_args.reset_opacity_every == 0:
                 model.reset_opacity()
 
+            if iter%train_args.oneup_sh_every == 0:
+                model.oneup_sh_degree()
+
 
             # TODO: move this to some method in Gaussians
             t = iter / train_args.iterations
@@ -198,8 +197,10 @@ def train_loop(
                 dataset=dataset,
                 device=device,
                 train_args=train_args,
+                pipeline_args=pipeline_args,
                 rendering_pkg=rendering_pkg,
                 loss=loss,
+                loss_fn=loss_fn,
                 pbar=pbar,
                 summarizer=summarizer
             )
@@ -207,6 +208,8 @@ def train_loop(
         # End iter
         model.optimizer.step()
         model.optimizer.zero_grad(set_to_none=True)
+
+        torch.cuda.empty_cache()
 
     if pbar is not None:
         pbar.close()
@@ -268,9 +271,6 @@ if __name__ == '__main__':
             scene_extend=dataset.scene_extend,
             **vars(model_args),
         )
-
-    # TODO
-    # dataset.cameras = dataset.cameras
 
     train_loop(
         model=model,

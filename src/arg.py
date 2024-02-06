@@ -100,8 +100,10 @@ class TrainParams(ParamGroup):
         self.densify_until=15_000
 
         self.reset_opacity_from=3_000
-        self.reset_opacity_until=21_000
+        self.reset_opacity_until=15_000
         self.reset_opacity_every=3_000
+
+        self.oneup_sh_every=2_000
 
         self.grad_threshold=2e-6
         self.max_density=0.01
@@ -125,24 +127,25 @@ class PipeLineParams(ParamGroup):
     def __init__(self, *arg,**kwarg):
         self.device='cuda:0'
 
-        self.model_dir='models'
-        self.load_checkpoint=''
-        self.save_checkpoint="model_{}.ckpt".format(datetime.datetime.now().strftime('%a%d%b%H%M%S').lower())
+        self.model_name = datetime.datetime.now().strftime('%a%d%b%H%M%S').lower()
+
+        self.model_dir = 'models'
+        self.load_checkpoint = ''
 
         # For tensorboard
-        self.log_dir="logs/{}".format(datetime.datetime.now().strftime('%a%d%b%H%M%S').lower())
+        self.log_dir="logs/{}".format(self.model_name)
 
         self.no_pbar = False
         super().__init__(*arg,**kwarg)
 
     def extract(self,args):
-        if args.load_checkpoint and not self.load_checkpoint.endswith(".ply"):
+        if args.load_checkpoint and not args.load_checkpoint.endswith(".ply"):
             args.load_checkpoint = os.path.join(
-                args.load_checkpoint,
+                os.path.abspath(args.load_checkpoint),
                 "point_cloud.ply"
             )
 
-        args.model_dir = os.path.abspath(args.model_dir)
+        args.model_dir = os.path.join( os.path.abspath(args.model_dir), args.model_name)
         args.log_dir = os.path.abspath(args.log_dir)
 
         return super().extract(args)

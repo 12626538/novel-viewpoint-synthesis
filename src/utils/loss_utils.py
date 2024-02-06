@@ -102,8 +102,6 @@ class DSSIMLoss(torch.nn.Module):
 
     def forward(self, X:Tensor, Y:Tensor) -> Tensor:
         win = create_window(window_size=self.win_size, channel=self.channel).cuda()
-        X = X.permute(2,0,1) # H,W,C -> C,H,W
-        Y = Y.permute(2,0,1)
 
         mux = F.conv2d(X, win, padding=self.win_size // 2, groups=self.channel)
         muy = F.conv2d(Y, win, padding=self.win_size // 2, groups=self.channel)

@@ -33,6 +33,8 @@ def image_path_to_tensor(image_path:str, rescale:float=1) -> torch.Tensor:
     Read image to tensor
 
     Rescale by a factor 1/rescale if specified
+
+    Output shape is C,H,W
     """
     img = Image.open(image_path)
 
@@ -41,7 +43,7 @@ def image_path_to_tensor(image_path:str, rescale:float=1) -> torch.Tensor:
 
     transform = transforms.ToTensor()
 
-    img_tensor = transform(img).permute(1, 2, 0)[..., :3]
+    img_tensor = transform(img)
     return img_tensor
 
 def batch_qvec2rotmat(batch_qvec) -> torch.Tensor:

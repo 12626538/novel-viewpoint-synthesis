@@ -29,6 +29,7 @@ class ColmapDataSet:
         rescale:int=1,
         device='cuda',
         shuffled:bool=True,
+        split:bool=True,
     ) -> None:
         """
         Initialize ColmapDataSet
@@ -44,12 +45,16 @@ class ColmapDataSet:
             and read images from there
         - `shuffled:bool=True` Whether to shuffle the cameras when iterating
             this instance
+        - `split:bool=True` If set to True, split cameras into train/test set,
+            yielding different cameras in 'train' or 'test' mode (set by
+            `dataset.train()` and `dataset.test()`). Otherwise, all cameras
+            are yielded in both methods.
 
-        Raises ValueError if `cameras.txt`, `images.txt` and `points3D.txt`
-        cannot be found in `[source_path]/[data_folder]`
+        Raises ValueError if `cameras.txt` or `images.txt`  cannot be found
+        in `[source_path]/[data_folder]`
 
-        Raises FileNotFoundError if images in `images.txt` are not found
-        in `[source_path]/[images_folder]/[name]`
+        Raises FileNotFoundError if images specified in `images.txt` are
+        not found in `[source_path]/[images_folder]/[name]`
         """
 
         assert rescale in {1,2,4,8}
@@ -106,10 +111,15 @@ class ColmapDataSet:
         # Compute size s.t. all cameras fit in range [-scene_extend, scene_extend] in X,Y,Z directions
         self.scene_extend:float = 1.1 * np.linalg.norm(camera_positions - center_camera, axis=1).max()
 
-        # Move all cameras into this range
-        # center_camera=center_camera.flatten()
-        # for cam in self.cameras:
-        #     cam.t -= center_camera
+        # Create train and test split
+        self._train = True
+        if split:
+            self._train_idxs = list(idx for idx in range(len(self.cameras)) if idx%8 != 0)
+            self._test_idxs = list(idx for idx in range(len(self.cameras)) if idx%8 == 0)
+        else:
+            self._train_idxs = list(range(len(self.cameras)))
+            self._test_idxs = self._train_idxs
+
 
     def __len__(self):
         return len(self.cameras)
@@ -119,8 +129,9 @@ class ColmapDataSet:
         """
         Iterate dataset
         """
-        _idxs = list(range(len(self)))
-        if self.shuffled:
+        _idxs = (self._train_idxs if self._train else self._test_idxs).copy()
+
+        if self.shuffled and self._train:
             random.shuffle(_idxs)
 
         for id in _idxs:
@@ -134,17 +145,47 @@ class ColmapDataSet:
         This method will asure all cameras are iterated at least once
         before any will be yielded a second time.
 
+        Note that, once called, this generator is not effected by the `shuffle`
+        and `.train()`/`.test()` properties/methods.
+
         If `ColmapDataSet.shuffled` is set to `True`, cameras will be yielded
-        in random order, and is reshuffled every time all cameras are iterated
-        unlike `itertools.cycle(dataset)`.
+        in random order, and is reshuffled every time all cameras are iterated,
+        this behavior is unlike `itertools.cycle(dataset)`.
         """
+
+        _idxs = (self._train_idxs if self._train else self._test_idxs).copy()
+        shuffle = self.shuffled and self._train
+
         while True:
-            for camera in self:
-                yield camera
+
+            if shuffle:
+                random.shuffle(_idxs)
+
+            for id in _idxs:
+                yield self.cameras[id]
+
+
+    def train(self):
+        """Set dataset in 'train mode', yielding only the cameras selected as
+        training cameras when iterating. Note that this does not affect dataset.cameras"""
+        self._train=True
+
+
+    def test(self):
+        """Set dataset in 'test mode', yielding only the cameras selected as
+        testing cameras when iterating. Note that this does not affect dataset.cameras"""
+        self._train=False
 
 
     def oneup_scale(self):
-        # Update current scale, with a fallback of scale 1 in case of error
+        """
+        Update each camera's ground truth image with an image a scale higher than
+        the current.
+
+        For example, if the current scale is 8, it replaces all gt images with a
+        scale 4 version.
+        """
+        # Update current scale, with a fallback of scale 1
         mapper = { 8:4, 4:2, 2:1, 1:1 }
         self.current_scale = mapper.get(self.current_scale, 1)
 

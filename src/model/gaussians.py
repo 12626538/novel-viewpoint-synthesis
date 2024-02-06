@@ -13,6 +13,8 @@ from ..utils.camera import Camera
 from ..utils import colmap_utils
 from ..utils import batch_qvec2rotmat
 
+from ..utils.sh_utils import eval_sh
+
 # An instance of this is returned by the `Gaussians.render` method
 RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask"])
 
@@ -47,7 +49,6 @@ class Gaussians(nn.Module):
             _colors = np.zeros((n,d,c))
             _colors[:,0] = colors
             colors = torch.from_numpy(_colors).to(device=device)
-            print(colors.shape)
 
         return Gaussians(
             means=means,
@@ -74,9 +75,6 @@ class Gaussians(nn.Module):
         # Read ply data
         plydata = PlyData.read(path_to_ply_file)
 
-        # Pass this to the __init__ function
-        params = {}
-
         # Extract positions as np array
         vertex:PlyElement = plydata['vertex']
 
@@ -90,64 +88,64 @@ class Gaussians(nn.Module):
             means = np.stack([vertex['pos_1'], vertex['pos_2'], vertex['pos_3']], axis=1)
         else:
             raise ValueError("Cannot read .ply data, vertex needs either xyz or pos_1/2/3 properties")
-        params['means'] = torch.from_numpy(means).to(device)
+        kwargs['means'] = torch.from_numpy(means).to(device)
 
         # Get scales
         if properties.issuperset({"scale_1","scale_2","scale_3"}):
             scales = np.stack([vertex['scale_1'], vertex['scale_2'], vertex['scale_3']], axis=1)
-            params['scales'] = torch.from_numpy(scales).to(device)
+            kwargs['scales'] = torch.from_numpy(scales).to(device)
 
         # Convert rot_1/2/3/4 to quaternions
         if properties.issuperset({"rot_1","rot_2","rot_3","rot_4"}):
             quats = np.stack([vertex['rot_1'], vertex['rot_2'], vertex['rot_3'], vertex['rot_4']], axis=1)
-            params['quats'] = torch.from_numpy(quats).to(device)
+            kwargs['quats'] = torch.from_numpy(quats).to(device)
 
         # Extract colors
         colors = None
         if properties.issuperset({'red','green','blue'}):
             colors = np.stack([vertex['red'], vertex['green'], vertex['blue']], axis=1) / 255.0
-            params['colors'] = torch.from_numpy(colors).to(device).reshape(-1, 1, 3)
-            params['sh_degree']=0
+            kwargs['colors'] = torch.from_numpy(colors).to(device).reshape(-1, 1, 3)
+            kwargs['sh_degree']=0
 
         # Convert color_1,color_2,...,color_C to NxC numpy array
         elif 'color_1' in properties:
             cols = sorted([prop for prop in properties if prop.startswith("color_")])
             colors = np.stack([vertex[c] for c in cols], axis=1)
-            params['colors'] = torch.from_numpy(colors).to(device).reshape(-1, 1, len(cols))
-            params['sh_degree']=0
+            kwargs['colors'] = torch.from_numpy(colors).to(device).reshape(-1, 1, len(cols))
+            kwargs['sh_degree']=0
 
         # Convert color_1_1, ..., color_D_1, ..., color_D_C to NxDxC numpy array
         elif 'color_1_1' in properties:
-            colors = []
 
-            i=1
-            while f'color_{i}_1' in properties:
-                # Get color_i_1, ..., color_i_C
-                cols = sorted([prop for prop in properties if prop.startswith(f"color_{i}_")])
-                colors.append( np.stack([vertex[c] for c in cols],axis=1) )
-                i+=1
+            # list of color_1_1, ..., color_1_C, ..., color_D_C
+            cols = sorted([prop for prop in properties if prop.startswith(f"color_")])
 
-            # Stack colors together. Assuming all stacked columns have the same shape
-            colors = np.stack(colors,axis=2)
+            # Find the D and C in color_D_C
+            D = max(int(color.split('_')[1]) for color in cols)
+            C = max(int(color.split('_')[2]) for color in cols)
+            if not all(f'color_{d+1}_{c+1}' in cols for c in range(C) for d in range(D)):
+                raise ValueError("Unexpected configuration of colors. Expected 'color_d_c' "
+                                 f"for all d=1,...,{D} and c=1,...,{C}, got {cols}")
 
             # Sanity check, make sure D=(d+1)^2 for some sh degree d
-            D = colors.shape[1]
             sh_degree:float = np.sqrt(D)-1
             if not sh_degree.is_integer():
-                raise ValueError(f"Unexpected number of features per color, "
-                                 "got D={D}, expected D=(d+1)^2 for some degree d.")
+                raise ValueError("Unexpected number of features per color, "
+                                 f"got D={D}, expected D=(d+1)^2 for some degree d.")
 
-            params['sh_degree'] = int(sh_degree)
-            params['colors'] = torch.from_numpy( colors ).to(device)
+            # Stack colors together
+            colors = np.stack([vertex[c] for c in cols],axis=1).reshape(-1,D,C)
+
+            kwargs['sh_degree'] = int(sh_degree)
+            kwargs['colors'] = torch.from_numpy( colors ).to(device)
 
         # Extract opacities
-        if 'opacity' in properties:
-            params['opacities'] = torch.from_numpy( vertex['opacity'].reshape(-1,1) ).to(device)
+        if 'opacities' in properties:
+            kwargs['opacities'] = torch.from_numpy( vertex['opacities'].reshape(-1,1) ).to(device)
 
         # Create Gaussians instance
         return Gaussians(
             device=device,
-            **params,
             **kwargs,
         )
 
@@ -186,7 +184,7 @@ class Gaussians(nn.Module):
         fields = ['pos_1', 'pos_2', 'pos_3'] \
             + ['scale_1', 'scale_2', 'scale_3'] \
             + ['rot_1','rot_2','rot_3','rot_4'] \
-            + [f'color_{d+1}_{c+1}' for d in range(self.colors.shape[-2]) for c in range(self.colors.shape[-1])] \
+            + [f'color_{d+1}_{c+1}' for d in range(self.colors.shape[1]) for c in range(self.colors.shape[2])] \
             + ['opacities',]
 
         # Set up output matrix
@@ -194,7 +192,7 @@ class Gaussians(nn.Module):
         data = np.empty(self.means.shape[0], dtype=dtypes)
 
         # Create big matrix with all features
-        colors = self.colors.view(self.means.shape[0],-1)
+        colors = self.colors.view(self.colors.shape[0],-1)
         features = np.concatenate(
             [tensor.detach().cpu().numpy()
              for tensor in ( self.means, self.scales, self.quats, colors, self.opacities )],
@@ -279,6 +277,10 @@ class Gaussians(nn.Module):
         """
         # Init `torch.nn.Module` instance
         super().__init__()
+
+        # BUG: SH increases memory usage, even if the model doesnt grow. See what thats about
+        # if sh_degree != 0:
+        #     raise NotImplementedError("Spherical Harmonics are currently not implemented")
 
         self.device = device
 
@@ -366,7 +368,7 @@ class Gaussians(nn.Module):
         # Reset gradient stats, make sure no NameError happens
         self.reset_densification_stats()
 
-        # TODO: remove these
+        # Keep a running tally of number of split,cloned and pruned points for debugging
         self._n_split = 0
         self._n_clone = 0
         self._n_prune = 0
@@ -395,7 +397,7 @@ class Gaussians(nn.Module):
         - `bg:Optional[torch.Tensor]=None` - Background to use, random if None
 
         Returns a RenderPackage instance with properties
-        - `rendering:torch.Tensor` - Generated image, shape `H,W,C` where `C` is
+        - `rendering:torch.Tensor` - Generated image, shape `C,H,W` where `C` is
         equal to `Gaussians.colors.shape[-1]` and `H,W` is determined by the given
         `Camera` instance.
         - `xys:torch.Tensor` - 2D location of splats, shape `N,2` where `N` is
@@ -434,7 +436,6 @@ class Gaussians(nn.Module):
 
         # TODO: remove this if CUDA errors stop
         # Sanity check, render nothing if nothing is in view
-        # print((radii>0).sum().item(),flush=True)
         if not (radii > 0).any():
             raise ValueError("No splats in view")
 
@@ -447,13 +448,13 @@ class Gaussians(nn.Module):
             pass
 
         # TODO
-        viewdirs = self.means - torch.from_numpy(camera.t).to(self.device).unsqueeze(0)
+        viewdirs = self.means.detach() - torch.from_numpy(camera.t).float().to(self.device).unsqueeze(0)
         viewdirs /= torch.linalg.norm(viewdirs,dim=1,keepdim=True)
 
         # Convert SH features to features
         colors = gsplat.spherical_harmonics(
             degrees_to_use=self.sh_degree_current,
-            viewdirs=viewdirs.float().detach(),
+            viewdirs=viewdirs,
             coeffs=self.colors,
         )
 
@@ -469,7 +470,7 @@ class Gaussians(nn.Module):
             img_height=camera.H,
             img_width=camera.W,
             background=bg,
-        )
+        ).permute(2,0,1)
 
         return RenderPackage(
             rendering=out_img,
@@ -559,8 +560,6 @@ class Gaussians(nn.Module):
         radius larger than this value. If None, skip this step.
         - `N:int=2` - Into how many splats a splat needs to be split
         """
-        # print("#"*20,f"\nDensifying... [started with {self.num_points} splats]")
-
         # Compute actual gradient average
         grads = self._xys_grad_accum / self._xys_grad_norm
         grads[grads.isnan()] = 0.
@@ -571,7 +570,6 @@ class Gaussians(nn.Module):
         # Clone all splats with a big gradient but not too big a scale
         clone_cond =  grad_cond & ( ~scale_cond )
 
-        # print(f"{clone_mask.sum()} splats selected for cloning/splitting")
         self._n_clone = clone_cond.sum()
 
         # Create copy of each selected splat
@@ -688,4 +686,7 @@ class Gaussians(nn.Module):
         """
         # clamp_max_ is inplace
         self.opacities.clamp_max_(-4.59512)
-        del self.optimizer.state[self.opacities]
+
+
+    def oneup_sh_degree(self):
+        self.sh_degree_current = min(self.sh_degree_max, self.sh_degree_current+1)

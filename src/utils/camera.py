@@ -11,7 +11,7 @@ class Camera:
         device:torch.device,
         fovx:float,
         fovy:float,
-        gt_image:torch.Tensor=None, # Ground truth, shape HxWxC
+        gt_image:torch.Tensor=None, # Ground truth, shape CxHxW
         H:int=None,W:int=None, # Height and Width, specify if gt_image is unspecified
         znear:float=0.01,
         zfar:float=100.,
@@ -58,7 +58,7 @@ class Camera:
         Centralized method to set `Camera.gt_image`, `Camera.H` and `Camera.W`
         """
         self.gt_image = image.to(self.device)
-        self.H,self.W = image.shape[:2]
+        self.H,self.W = image.shape[-2:]
 
     # Use @properties to not have to worry about updating things when
     # Camera.W changes etc
