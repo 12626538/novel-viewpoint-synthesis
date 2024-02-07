@@ -71,6 +71,28 @@ class Gaussians(nn.Module):
         from PlyData.
 
         Any additional kwargs will be passed to Gaussians.__init__
+
+        Raises:
+        - ValueError if no properties interpretable as means are found (see below)
+        - ValueError if colors are badly formatted. This is either because not all
+            colors in `color_1, ..., color_1_C, ..., color_D_C` are present, or
+            `D` does not satisfy `D=(sh_degree+1)^2` for some `sh_degree`.
+
+        Expects the following formats:
+        - Means can either be with properties `x,y,z` or `pos_1,pos_2,pos_3`.
+            One of these is required, raise ValueError of neither are present.
+        - Scales should be formatted as `scale_1,scale_2,scale_3`
+        - Rotations (quaternions) can either be formatted as
+            `rot_1,rot_2,rot_3,rot_4` or `quat_w,quat_x,quat_y,quat_z`.
+        - Colors are a `D x C` dimensional feature vector per splat, where
+            `D=(sh_degree+1)^2` are spherical harmonic features and `C` is some
+            number of colors. Accepted formats are:
+            - `red,green,blue` for `sh_degree=0` and `C=3`.
+            - `color_1, ..., color_C` for `sh_degree=0` some `C`
+            - `color_1, ..., color_1_C, ..., color_D_C` for some `D` and `C`.
+                Raises ValueError if not all colors are present or `D` does not
+                satisfy `D=(sh_degree+1)^2` for some `sh_degree`.
+        - Opacities can either be in a `opacities` or `opacity` field.
         """
         # Read ply data
         plydata = PlyData.read(path_to_ply_file)
@@ -99,6 +121,10 @@ class Gaussians(nn.Module):
         if properties.issuperset({"rot_1","rot_2","rot_3","rot_4"}):
             quats = np.stack([vertex['rot_1'], vertex['rot_2'], vertex['rot_3'], vertex['rot_4']], axis=1)
             kwargs['quats'] = torch.from_numpy(quats).to(device)
+        # Convert rot_w/x/y/z to quaternions
+        elif properties.issuperset({"quat_w","quat_x","quat_y","quat_z"}):
+            quats = np.stack([vertex['quat_w'], vertex['rot_x'], vertex['rot_y'], vertex['rot_z']], axis=1)
+            kwargs['quats'] = torch.from_numpy(quats).to(device)
 
         # Extract colors
         colors = None
@@ -118,12 +144,18 @@ class Gaussians(nn.Module):
         elif 'color_1_1' in properties:
 
             # list of color_1_1, ..., color_1_C, ..., color_D_C
-            cols = sorted([prop for prop in properties if prop.startswith(f"color_")])
+            # BUG: this is sorted wrong, color_10_1 is above color_1_2
+            # cols = sorted([prop for prop in properties if prop.startswith(f"color_")])
 
             # Find the D and C in color_D_C
-            D = max(int(color.split('_')[1]) for color in cols)
-            C = max(int(color.split('_')[2]) for color in cols)
-            if not all(f'color_{d+1}_{c+1}' in cols for c in range(C) for d in range(D)):
+            D = max(int(color.split('_')[1]) for color in properties if color.startswith('color_'))
+            C = max(int(color.split('_')[2]) for color in properties if color.startswith('color_'))
+
+            # Set up list of colors
+            cols = [f'color_{d+1}_{c+1}' for d in range(D) for c in range(C)]
+
+            # Sanity check: make sure all colors and degrees are represented
+            if properties.issuperset(cols):
                 raise ValueError("Unexpected configuration of colors. Expected 'color_d_c' "
                                  f"for all d=1,...,{D} and c=1,...,{C}, got {cols}")
 
@@ -142,6 +174,8 @@ class Gaussians(nn.Module):
         # Extract opacities
         if 'opacities' in properties:
             kwargs['opacities'] = torch.from_numpy( vertex['opacities'].reshape(-1,1) ).to(device)
+        elif 'opacity' in properties:
+            kwargs['opacities'] = torch.from_numpy( vertex['opacity'].reshape(-1,1) ).to(device)
 
         # Create Gaussians instance
         return Gaussians(
@@ -181,21 +215,21 @@ class Gaussians(nn.Module):
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
         # Fields to use
-        fields = ['pos_1', 'pos_2', 'pos_3'] \
-            + ['scale_1', 'scale_2', 'scale_3'] \
-            + ['rot_1','rot_2','rot_3','rot_4'] \
+        fields = [f'pos_{p+1}' for p in range(self.means.shape[1])] \
+            + [f'scale_{s+1}' for s in range(self.scales.shape[1])] \
+            + [f'rot_{c+1}' for c in range(self.quats.shape[1])] \
             + [f'color_{d+1}_{c+1}' for d in range(self.colors.shape[1]) for c in range(self.colors.shape[2])] \
-            + ['opacities',]
+            + ['opacity',]
 
         # Set up output matrix
         dtypes = [(field,'f4') for field in fields]
         data = np.empty(self.means.shape[0], dtype=dtypes)
 
         # Create big matrix with all features
-        colors = self.colors.view(self.colors.shape[0],-1)
+        N = self.colors.shape[0]
         features = np.concatenate(
-            [tensor.detach().cpu().numpy()
-             for tensor in ( self.means, self.scales, self.quats, colors, self.opacities )],
+            [tensor.detach().cpu().numpy().reshape(N,-1)
+             for tensor in ( self.means, self.scales, self.quats, self.colors, self.opacities )],
             axis=1
         )
 
