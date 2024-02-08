@@ -7,7 +7,7 @@ from torchvision.utils import save_image
 from torcheval.metrics import PeakSignalNoiseRatio
 
 from src.model.gaussians import Gaussians,RenderPackage
-from src.data.colmap import ColmapDataSet
+from src.data import DataSet
 from src.utils.loss_utils import L1Loss,DSSIMLoss,CombinedLoss
 from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams
 
@@ -56,7 +56,13 @@ if __name__ == '__main__':
     print(model.colors.shape)
     1/0
 
-    dataset = ColmapDataSet(device=args.device, **vars(data_args))
+    # 3DU datasets are from intrinsics and extrinsics
+    if data_args.source_path[:-1].endswith("3du_data_"):
+        dataset = DataSet.from_intr_extr(device=args.device, **vars(data_args))
+
+    # Paper datasets are COLMAP formatted
+    else:
+        dataset = DataSet.from_colmap(device=args.device, **vars(data_args))
 
     if args.video:
 
