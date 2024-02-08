@@ -86,6 +86,7 @@ class DataSet:
                 name=extr['name'],
                 device=device
             ))
+        print()
 
         # Initialize DataSet instance
         return DataSet(
@@ -121,10 +122,12 @@ class DataSet:
             Will try to see if `[source_path]/[images_folder]_[rescale]/` exists
             and read images from there
         """
+        # This argument gets passed by default, remove it.
+        del kwargs['data_folder']
 
         source_path = os.path.abspath(source_path)
-        images_folder = os.path.join( source_path, images_folder )
 
+        # Get intrinsics and extrinsics
         intrs = np.load(os.path.join(source_path, intrinsics_file))
         extrs = np.load(os.path.join(source_path, extrinsics_file))
 
@@ -132,7 +135,7 @@ class DataSet:
         assert intrs.shape[0] == extrs.shape[0], \
             "Intrinsics and extrinsics do not share the same first dim"
 
-        N = intrs.shape[0]
+        N = 200#intrs.shape[0]
         cameras = []
         for idx in range(N):
             print("\rParsing cameras and images... {:4}/{:4}".format(idx,N),flush=True,end="")

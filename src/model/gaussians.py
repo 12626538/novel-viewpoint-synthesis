@@ -9,9 +9,8 @@ from torch import nn,optim
 import torch.nn.functional as F
 from plyfile import PlyElement, PlyData
 
-from ..utils.camera import Camera
-from ..utils import colmap_utils
-from ..utils import batch_qvec2rotmat
+from src.utils.camera import Camera
+from src.utils import colmap_utils,batch_qvec2rotmat,sigmoid_inv
 
 # An instance of this is returned by the `Gaussians.render` method
 RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask"])
@@ -464,29 +463,24 @@ class Gaussians(nn.Module):
             tile_bounds=tile_bounds
         )
 
-        # TODO: remove this if CUDA errors stop
-        # Sanity check, render nothing if nothing is in view
-        if not (radii > 0).any():
-            raise ValueError("No splats in view")
-
-        torch.cuda.synchronize()
-
         # Attempt to keep position gradients to update densification stats
         try:
             xys.retain_grad()
         except:
             pass
 
-        # TODO
-        viewdirs = self.means.detach() - torch.from_numpy(camera.t).float().to(self.device).unsqueeze(0)
+        viewdirs = self.means.detach() - torch.from_numpy(camera.loc).float().to(self.device).unsqueeze(0)
         viewdirs /= torch.linalg.norm(viewdirs,dim=1,keepdim=True)
 
         # Convert SH features to features
-        colors = gsplat.spherical_harmonics(
-            degrees_to_use=self.sh_degree_current,
-            viewdirs=viewdirs,
-            coeffs=self.colors,
-        )
+        if self.sh_degree_current > 0:
+            colors = gsplat.spherical_harmonics(
+                degrees_to_use=self.sh_degree_current,
+                viewdirs=viewdirs,
+                coeffs=self.colors,
+            )
+        else:
+            colors = self.colors.view(-1,3)
 
         # Generate image
         out_img = gsplat.rasterize_gaussians(
@@ -615,7 +609,6 @@ class Gaussians(nn.Module):
         self._n_split = split_cond.sum()
 
         # Create `N` copies of each split splat
-        means_split = self.means[split_cond].repeat( N, 1 )
         scales_split = self.scales[split_cond].repeat( N, 1 )
         quats_split = self.quats[split_cond].repeat( N, 1 )
         colors_split = self.colors[split_cond].repeat( N, 1, 1 )
@@ -626,11 +619,13 @@ class Gaussians(nn.Module):
 
         # Add a noisy vector to the mean based on the scale and rotation of the splat
         noise = torch.normal(
-            mean=torch.zeros_like(means_split, device=self.device),
+            mean=torch.zeros((scales_split.shape[0],3), device=self.device),
             std=self.act_scales(scales_split),
         )
         rotmats = batch_qvec2rotmat(self.act_quats(quats_split.detach()))
-        means_split += torch.bmm(rotmats, noise.unsqueeze(-1)).squeeze(-1)
+
+        # Get mean as sum of noise and original mean
+        means_split = self.means[split_cond].repeat( N, 1 ) + torch.bmm(rotmats, noise.unsqueeze(-1)).squeeze(-1)
 
         # Finally, remove all split splats, and with an opacity too low
         prune_cond = split_cond \
@@ -715,7 +710,7 @@ class Gaussians(nn.Module):
         s.t. `sigmoid(-4.59512) = 0.01`
         """
         # clamp_max_ is inplace
-        self.opacities.clamp_max_(-4.59512)
+        self.opacities.clamp_max_(sigmoid_inv(torch.tensor(0.01,device=self.device)))
 
 
     def oneup_sh_degree(self):

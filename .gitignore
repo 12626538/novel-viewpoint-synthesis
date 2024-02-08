@@ -4,6 +4,7 @@ logs/
 nohup.out
 *.code-workspace
 *.png
+scripts/
 
 
 # Byte-compiled / optimized / DLL files

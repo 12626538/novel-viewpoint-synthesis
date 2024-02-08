@@ -4,6 +4,9 @@ import math
 from PIL import Image
 from torchvision import transforms
 
+def sigmoid_inv(x):
+    return torch.log(x/(1-x))
+
 def qvec2rotmat(qvec:np.ndarray) -> np.ndarray:
     """
     Convert [w,x,y,z] quaternion to 3x3 rotation matrix

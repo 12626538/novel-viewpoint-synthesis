@@ -179,17 +179,6 @@ def train_loop(
             if iter%train_args.oneup_sh_every == 0:
                 model.oneup_sh_degree()
 
-
-            # TODO: move this to some method in Gaussians
-            t = iter / train_args.iterations
-            lr = np.exp( (1-t)*np.log(0.00016 * dataset.scene_extend) + t*np.log(0.0000016* dataset.scene_extend) )
-
-            for group in model.optimizer.param_groups:
-                if group['name'] == 'means':
-                    group['lr'] = lr
-                    break
-            # </TODO>
-
             # Report on iter
             train_report(
                 iter=iter,
@@ -240,10 +229,15 @@ if __name__ == '__main__':
 
     # 3DU datasets are from intrinsics and extrinsics
     if data_args.source_path[:-1].endswith("3du_data_"):
-        dataset = DataSet.from_intr_extr(device=args.device, **vars(data_args))
+        print("Reading dataset from intrinsics/extrinsics...")
+        dataset = DataSet.from_intr_extr(
+            device=args.device,
+            **vars(data_args)
+        )
 
     # Paper datasets are COLMAP formatted
     else:
+        print("Reading dataset from COLMAP...")
         dataset = DataSet.from_colmap(device=args.device, **vars(data_args))
 
     # Use checkpoint
