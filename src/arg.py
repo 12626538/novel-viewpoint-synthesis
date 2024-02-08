@@ -105,7 +105,7 @@ class TrainParams(ParamGroup):
 
         self.oneup_sh_every=2_000
 
-        self.grad_threshold=2e-6
+        self.grad_threshold=1e-6
         self.max_density=0.01
         self.min_opacity=0.005
 

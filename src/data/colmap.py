@@ -92,7 +92,7 @@ class ColmapDataSet:
 
             self.cameras.append(Camera(
                 gt_image=image_path_to_tensor( os.path.join(images_folder, image['name']), rescale=rescale ),
-                R=qvec2rotmat(image['qvec']).T,
+                R=qvec2rotmat(image['qvec']),
                 t=image['tvec'],
                 fovx=focal2fov(camera['fx'], camera['width']),
                 fovy=focal2fov(camera['fy'], camera['height']),
@@ -105,7 +105,7 @@ class ColmapDataSet:
         self.cameras = sorted(self.cameras, key=lambda cam:cam.name)
 
         # Compute scene center
-        camera_positions = np.vstack([camera.t for camera in self.cameras])
+        camera_positions = np.vstack([camera.loc for camera in self.cameras])
         center_camera = camera_positions.mean(axis=0,keepdims=True)
 
         # Compute size s.t. all cameras fit in range [-scene_extend, scene_extend] in X,Y,Z directions

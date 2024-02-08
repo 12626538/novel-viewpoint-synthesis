@@ -13,8 +13,6 @@ from ..utils.camera import Camera
 from ..utils import colmap_utils
 from ..utils import batch_qvec2rotmat
 
-from ..utils.sh_utils import eval_sh
-
 # An instance of this is returned by the `Gaussians.render` method
 RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask"])
 
@@ -135,29 +133,27 @@ class Gaussians(nn.Module):
 
         # Convert color_1,color_2,...,color_C to NxC numpy array
         elif 'color_1' in properties:
+
+            # BUG: sorted will output [color_1, color_10, color_2, ...]
             cols = sorted([prop for prop in properties if prop.startswith("color_")])
             colors = np.stack([vertex[c] for c in cols], axis=1)
             kwargs['colors'] = torch.from_numpy(colors).to(device).reshape(-1, 1, len(cols))
             kwargs['sh_degree']=0
 
-        # Convert color_1_1, ..., color_D_1, ..., color_D_C to NxDxC numpy array
+        # Convert color_1_1, ..., color_1_C, ..., color_D_C to NxDxC numpy array
         elif 'color_1_1' in properties:
-
-            # list of color_1_1, ..., color_1_C, ..., color_D_C
-            # BUG: this is sorted wrong, color_10_1 is above color_1_2
-            # cols = sorted([prop for prop in properties if prop.startswith(f"color_")])
 
             # Find the D and C in color_D_C
             D = max(int(color.split('_')[1]) for color in properties if color.startswith('color_'))
             C = max(int(color.split('_')[2]) for color in properties if color.startswith('color_'))
 
-            # Set up list of colors
+            # Set up list of colors color_1_1, ..., color_1_C, ..., color_D_C
             cols = [f'color_{d+1}_{c+1}' for d in range(D) for c in range(C)]
 
             # Sanity check: make sure all colors and degrees are represented
-            if properties.issuperset(cols):
+            if not properties.issuperset(cols):
                 raise ValueError("Unexpected configuration of colors. Expected 'color_d_c' "
-                                 f"for all d=1,...,{D} and c=1,...,{C}, got {cols}")
+                                 f"for all d=1,...,{D} and c=1,...,{C}, missing {set(cols)-properties}")
 
             # Sanity check, make sure D=(d+1)^2 for some sh degree d
             sh_degree:float = np.sqrt(D)-1
@@ -543,7 +539,7 @@ class Gaussians(nn.Module):
 
         # Update running average of visible Gaussians
         if xys.grad is not None:
-            self._xys_grad_accum[visibility_mask] += torch.linalg.norm(xys.grad[visibility_mask], dim=1)
+            self._xys_grad_accum[visibility_mask] += torch.linalg.norm(xys.grad[visibility_mask,:2], dim=1)
             self._xys_grad_norm[visibility_mask] += 1
 
         # Update max radii
@@ -599,7 +595,7 @@ class Gaussians(nn.Module):
         grads[grads.isnan()] = 0.
 
         grad_cond = grads >= grad_threshold
-        scale_cond = ( torch.max(self.act_scales(self.scales), axis=1).values > max_density ).squeeze()
+        scale_cond = ( torch.max(self.act_scales(self.scales), dim=1).values > max_density ).squeeze()
 
         # Clone all splats with a big gradient but not too big a scale
         clone_cond =  grad_cond & ( ~scale_cond )
@@ -633,7 +629,7 @@ class Gaussians(nn.Module):
             mean=torch.zeros_like(means_split, device=self.device),
             std=self.act_scales(scales_split),
         )
-        rotmats = batch_qvec2rotmat(self.act_quats(quats_split))
+        rotmats = batch_qvec2rotmat(self.act_quats(quats_split.detach()))
         means_split += torch.bmm(rotmats, noise.unsqueeze(-1)).squeeze(-1)
 
         # Finally, remove all split splats, and with an opacity too low
@@ -644,7 +640,7 @@ class Gaussians(nn.Module):
         if max_screen_size is not None:
             prune_cond = prune_cond \
                 | (self._max_radii > max_screen_size) \
-                | ( torch.max(self.act_scales(self.scales),axis=1).values > max_world_size ).squeeze()
+                | ( torch.max(self.act_scales(self.scales), dim=1).values > max_world_size ).squeeze()
 
         self._n_prune = prune_cond.sum()
 
