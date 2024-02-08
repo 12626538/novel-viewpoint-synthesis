@@ -127,7 +127,7 @@ class PipeLineParams(ParamGroup):
     def __init__(self, *arg,**kwarg):
         self.device='cuda:0'
 
-        self.model_name = datetime.datetime.now().strftime('%a%d%b%H%M%S').lower()
+        self.model_name = datetime.datetime.now().strftime('%b%d%a%H%M%S').lower()
 
         self.model_dir = 'models'
         self.load_checkpoint = ''

@@ -73,10 +73,14 @@ class Camera:
 
     def set_gt_image(self, image:torch.Tensor):
         """
-        Centralized method to set `Camera.gt_image`, `Camera.H` and `Camera.W`
+        Centralized method to set `Camera.gt_image` and all dependent properties
+        such as `H,W,fx,fy`.
         """
         self.gt_image = image.to(self.device)
         self.H,self.W = image.shape[-2:]
+
+        self.fx = fov2focal(self.fovx, self.W)
+        self.fy = fov2focal(self.fovy, self.H)
 
 
     def to(self, device) -> 'Camera':
