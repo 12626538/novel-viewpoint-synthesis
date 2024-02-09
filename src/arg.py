@@ -32,6 +32,9 @@ class ParamGroup(object):
             # Set type
             if type(value) == bool:
                 kwargs['action'] = 'store_true'
+            elif type(value) == list:
+                kwargs['nargs'] = '+'
+                kwargs['type'] = type(value[0])
             else:
                 kwargs['type'] = type(value)
 
@@ -108,6 +111,7 @@ class TrainParams(ParamGroup):
         self.grad_threshold=1e-6
         self.max_density=0.01
         self.min_opacity=0.005
+        self.max_screen_size=20
 
         self.lambda_dssim=0.2
 
@@ -134,6 +138,9 @@ class PipeLineParams(ParamGroup):
 
         # For tensorboard
         self.log_dir="logs/{}".format(self.model_name)
+
+        self.random_background = False
+        self.white_background = False
 
         self.no_pbar = False
         super().__init__(*arg,**kwarg)
