@@ -5,7 +5,7 @@ from PIL import Image
 from torchvision import transforms
 
 def sigmoid_inv(x):
-    return torch.log(x/(1-x))
+    return np.log(x/(1-x))
 
 def qvec2rotmat(qvec:np.ndarray) -> np.ndarray:
     """
