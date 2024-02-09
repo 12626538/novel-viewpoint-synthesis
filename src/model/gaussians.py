@@ -37,6 +37,10 @@ class Gaussians(nn.Module):
         means, colors = colmap_utils.read_points3D(path_to_points3D_file)
         means = torch.from_numpy(means).to(device=device)
 
+        # Account for sigmoid activation function for the colors
+        # Clip from [0,1] to (0,1) to prevent division by zero errors
+        colors = sigmoid_inv(colors.clip(1e-7, 1-1e-7))
+
         if sh_degree == 0:
             c = colors.shape[-1]
             colors = torch.from_numpy(colors.reshape(-1,1,c)).to(device=device)
@@ -221,9 +225,8 @@ class Gaussians(nn.Module):
         data = np.empty(self.means.shape[0], dtype=dtypes)
 
         # Create big matrix with all features
-        N = self.colors.shape[0]
         features = np.concatenate(
-            [tensor.detach().cpu().numpy().reshape(N,-1)
+            [tensor.flatten(start_dim=1).detach().cpu().numpy()
              for tensor in ( self.means, self.scales, self.quats, self.colors, self.opacities )],
             axis=1
         )
@@ -327,7 +330,7 @@ class Gaussians(nn.Module):
 
         # Initialize scales
         if scales is None:
-            scales = torch.log( torch.rand(num_points, 3, device=self.device) / (scene_extend*20) )
+            scales = torch.log( torch.ones(num_points, 3, device=self.device) / (scene_extend*5) )
 
         # Initialize rotation
         if quats is None:
@@ -361,8 +364,8 @@ class Gaussians(nn.Module):
 
         # Initialize opacities
         if opacities is None:
-            # Initialize as -2.197, s.t. sigmoid(-2.197) = 0.1
-            opacities = torch.ones((num_points, 1), device=self.device) * -2.197
+            # such that sigmoid(opacity) = 0.1
+            opacities = torch.ones((num_points, 1), device=self.device) * sigmoid_inv(.1)
 
         # Sanity check: make sure all parameters have same number of points
         if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities)):
@@ -447,7 +450,7 @@ class Gaussians(nn.Module):
             bg = torch.rand(3, device=self.device)
 
         # Project Gaussians from 3D to 2D
-        xys, depths, radii, conics, num_tiles_hit, cov3d = gsplat.project_gaussians(
+        xys, depths, radii, conics, compensation, num_tiles_hit, cov3d = gsplat.project_gaussians(
             means3d=self.means,
             scales=self.act_scales( self.scales ),
             glob_scale=glob_scale,
@@ -473,14 +476,13 @@ class Gaussians(nn.Module):
         viewdirs /= torch.linalg.norm(viewdirs,dim=1,keepdim=True)
 
         # Convert SH features to features
-        if self.sh_degree_current > 0:
-            colors = gsplat.spherical_harmonics(
-                degrees_to_use=self.sh_degree_current,
-                viewdirs=viewdirs,
-                coeffs=self.colors,
-            )
-        else:
-            colors = self.colors.view(-1,3)
+        # TODO: these features should still be properly converted to colors?
+        colors = gsplat.spherical_harmonics(
+            degrees_to_use=self.sh_degree_current,
+            viewdirs=viewdirs,
+            coeffs=self.colors,
+        )
+
 
         # Generate image
         out_img = gsplat.rasterize_gaussians(
@@ -490,7 +492,7 @@ class Gaussians(nn.Module):
             conics=conics,
             num_tiles_hit=num_tiles_hit,
             colors=self.act_colors( colors ),
-            opacity=self.act_opacities( self.opacities ),
+            opacity=self.act_opacities( self.opacities ) * compensation[...,None],
             img_height=camera.H,
             img_width=camera.W,
             background=bg,
@@ -537,11 +539,10 @@ class Gaussians(nn.Module):
             self._xys_grad_norm[visibility_mask] += 1
 
         # Update max radii
-        if radii is not None:
-            self._max_radii[visibility_mask] = torch.max(
-                self._max_radii[visibility_mask],
-                radii[visibility_mask],
-            )
+        self._max_radii[visibility_mask] = torch.max(
+            self._max_radii[visibility_mask],
+            radii[visibility_mask],
+        )
 
 
     def densify(
@@ -702,15 +703,12 @@ class Gaussians(nn.Module):
             setattr(self, group['name'], group['params'][0])
 
 
-    def reset_opacity(self):
+    def reset_opacity(self, value=0.01):
         """
-        Clip all opacities at 0.01
-
-        Because opacities get fed through a sigmoid, set the value to `-4.59512`
-        s.t. `sigmoid(-4.59512) = 0.01`
+        Clip all opacities to a fixed maximum
         """
         # clamp_max_ is inplace
-        self.opacities.clamp_max_(sigmoid_inv(torch.tensor(0.01,device=self.device)))
+        self.opacities.clamp_max_(sigmoid_inv(value))
 
 
     def oneup_sh_degree(self):
