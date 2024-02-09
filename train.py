@@ -55,21 +55,26 @@ def train_report(
             for group in model.optimizer.param_groups:
                 summarizer.add_scalar(f"LearningRate/{group['name']}", group['lr'], iter)
 
-            summarizer.add_scalar("Pruning/NumSplats", model.num_points, iter)
-            summarizer.add_scalar("Pruning/n_split",model._n_split,iter)
-            summarizer.add_scalar("Pruning/n_clone",model._n_clone,iter)
-            summarizer.add_scalar("Pruning/n_prune",model._n_prune,iter)
+            if iter <= train_args.densify_until:
+                summarizer.add_scalar("Pruning/Num of splats", model.num_points, iter)
+                summarizer.add_scalar("Pruning/Num splats split",model._n_split, iter)
+                summarizer.add_scalar("Pruning/Num splats cloned",model._n_clone, iter)
+                summarizer.add_scalar("Pruning/Num splats pruned",model._n_prune, iter)
 
-        if (iter-1)%100 == 0:
+            summarizer.add_histogram("dev/radii", rendering_pkg.radii[rendering_pkg.visibility_mask].detach().cpu().numpy().clip(0,train_args.max_screen_size+1), iter)
+
+        if iter==1 or iter%100 == 0:
 
             camera = dataset.cameras[0]
             render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
             save_image(render,"renders/latest.png")
-            summarizer.add_image(
-                "Dev/Render",
-                render,
-                iter
-            )
+
+            if iter%300 == 0:
+                summarizer.add_image(
+                    "Dev/Render",
+                    render,
+                    iter
+                )
 
     # Save image
     if iter in train_args.save_at:
@@ -82,8 +87,12 @@ def train_report(
 
     # Test model
     if iter in train_args.test_at:
+        torch.cuda.empty_cache()
+
+        # Get testing cameras
         dataset.test()
 
+        # Compute average over PSNR and loss
         psnr = PeakSignalNoiseRatio()
         scores = []
         losses = []
@@ -92,24 +101,28 @@ def train_report(
 
         bg = torch.zeros(3).float().to(device)
         for cam in dataset:
+
             pkg = model.render(cam, bg=bg)
 
+            # Add scores
             psnr.update(pkg.rendering, cam.gt_image)
             scores.append( psnr.compute().item() )
 
             losses.append( loss_fn(pkg.rendering, cam.gt_image).item() )
 
+            # Save rendered images in summarizer
             if summarizer is not None:
-                summarizer.add_images(f"test/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)) )
+                summarizer.add_images(f"test/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)), iter )
 
+        # Report on results
         score = np.mean(scores)
         test_loss = np.mean(losses)
 
         print(f"PSNR: {np.mean(scores)}")
         print(f"Loss: {np.mean(losses)}")
         if summarizer is not None:
-            summarizer.add_scalar("test/psnr", score)
-            summarizer.add_scalar("test/loss", test_loss)
+            summarizer.add_scalar("test/psnr", score, iter)
+            summarizer.add_scalar("test/loss", test_loss, iter)
 
         dataset.train()
 
@@ -135,20 +148,25 @@ def train_loop(
             log_dir=pipeline_args.log_dir
         )
 
+    # Set background
+    background = None
+    if not pipeline_args.random_background:
+        background = torch.tensor([1,1,1] if pipeline_args.white_background else [0,0,0], dtype=torch.float32, device=device)
+
     # Use TQDM progress bar
     pbar = None
     if USE_TQDM:
         pbar = tqdm(total=train_args.iterations, desc="Training", smoothing=.5)
 
     dataset_cycle = dataset.cycle()
-
     for iter in range(1,train_args.iterations+1):
 
-        torch.cuda.synchronize()
-
+        # Forward pass
         camera = next(dataset_cycle)
-        rendering_pkg = model.render(camera)
+        rendering_pkg = model.render(camera, bg=background)
         loss = loss_fn(rendering_pkg.rendering, camera.gt_image)
+
+        # Compute gradients
         loss.backward()
 
         with torch.no_grad():
@@ -168,7 +186,8 @@ def train_loop(
                         max_density=train_args.max_density * dataset.scene_extend,
                         min_opacity=train_args.min_opacity,
                         max_world_size=0.1*dataset.scene_extend,
-                        max_screen_size=20 if iter > train_args.reset_opacity_from else None
+                        # TODO see what works here
+                        max_screen_size=train_args.max_screen_size if iter > train_args.reset_opacity_from else None,
                     )
 
             # Reset opacity
@@ -176,6 +195,7 @@ def train_loop(
             and iter % train_args.reset_opacity_every == 0:
                 model.reset_opacity()
 
+            # Increase SH degree used
             if iter%train_args.oneup_sh_every == 0:
                 model.oneup_sh_degree()
 
@@ -197,8 +217,6 @@ def train_loop(
         # End iter
         model.optimizer.step()
         model.optimizer.zero_grad(set_to_none=True)
-
-        torch.cuda.empty_cache()
 
     if pbar is not None:
         pbar.close()
