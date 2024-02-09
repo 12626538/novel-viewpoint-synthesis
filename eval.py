@@ -4,12 +4,10 @@ import numpy as np
 
 import torch
 from torchvision.utils import save_image
-from torcheval.metrics import PeakSignalNoiseRatio
 
 from src.model.gaussians import Gaussians,RenderPackage
 from src.data import DataSet,get_rotating_dataset
-from src.utils.loss_utils import L1Loss,DSSIMLoss,CombinedLoss
-from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams
+from src.arg import ModelParams,DataParams,PipeLineParams
 
 if __name__ == '__main__':
 
@@ -27,6 +25,11 @@ if __name__ == '__main__':
         '--fps', type=int,
         default=30,
         help='when generating videos, use this framerate'
+    )
+    parser.add_argument(
+        '--glob-scale', type=float,
+        default=1,
+        help="Global scaling factor for the gaussians, used for rendering"
     )
 
     args = parser.parse_args()
@@ -61,9 +64,7 @@ if __name__ == '__main__':
         **vars(model_args)
     )
 
-    print(model.sh_degree_max)
-
-    model.sh_degree_current = 0#model.sh_degree_max
+    model.sh_degree_current = model.sh_degree_max
 
     if args.reconstruct_video:
 
@@ -95,7 +96,7 @@ if __name__ == '__main__':
             A = (camera.gt_image.detach().permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)[:H,:W]
 
             # Render camera
-            render = model.render(camera, bg=torch.zeros(3,device=args.device)).rendering.permute(1,2,0)
+            render = model.render(camera, bg=torch.zeros(3,device=args.device), glob_scale=args.glob_scale).rendering.permute(1,2,0)
             B = (render.detach().cpu().numpy()*255).astype(np.uint8)[:H,:W]
 
             out[:H, :W] = A
@@ -130,7 +131,7 @@ if __name__ == '__main__':
             camera = cameras[i]
 
             # Render camera
-            render = model.render(camera, bg=torch.zeros(3,device=args.device)).rendering.permute(1,2,0)
+            render = model.render(camera, bg=torch.zeros(3,device=args.device), glob_scale=args.glob_scale).rendering.permute(1,2,0)
             A = (render.detach().cpu().numpy()*255).astype(np.uint8)[:H,:W]
 
             out[:H, :W] = A
