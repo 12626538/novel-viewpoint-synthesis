@@ -135,9 +135,13 @@ class DataSet:
         assert intrs.shape[0] == extrs.shape[0], \
             "Intrinsics and extrinsics do not share the same first dim"
 
-        N = 200#intrs.shape[0]
+        N = intrs.shape[0]
+        step = 1
+
+        if N > 200:
+            step = N//100
         cameras = []
-        for idx in range(N):
+        for idx in range(0, N, step):
             print("\rParsing cameras and images... {:4}/{:4}".format(idx,N),flush=True,end="")
             intr = np.linalg.inv(intrs[idx])
             extr = np.linalg.inv(extrs[idx])
