@@ -23,6 +23,7 @@ from src.model.gaussians import Gaussians,RenderPackage
 from src.data import DataSet
 from src.utils.loss_utils import L1Loss,DSSIMLoss,CombinedLoss
 from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams
+from src.camera import OptimizableCamera
 
 def train_report(
     iter:int, # !first iter is 1, not 0!
@@ -147,7 +148,6 @@ def train_loop(
         summarizer = SummaryWriter(
             log_dir=pipeline_args.log_dir
         )
-
     # Set background
     background = None
     if not pipeline_args.random_background:
@@ -158,8 +158,17 @@ def train_loop(
     if USE_TQDM:
         pbar = tqdm(total=train_args.iterations, desc="Training", smoothing=.5)
 
+    cam_optim = torch.optim.Adam(
+        params=[
+            cam.parameters() for cam in dataset.cameras if isinstance(cam, OptimizableCamera)
+        ]
+    )
+
     dataset_cycle = dataset.cycle()
     for iter in range(1,train_args.iterations+1):
+
+        model.optimizer.zero_grad(set_to_none=True)
+        cam_optim.zero_grad()
 
         # Forward pass
         camera = next(dataset_cycle)
@@ -168,6 +177,10 @@ def train_loop(
 
         # Compute gradients
         loss.backward()
+
+        # Optimize parameters
+        model.optimizer.step()
+        cam_optim.step()
 
         with torch.no_grad():
 
@@ -213,10 +226,6 @@ def train_loop(
                 pbar=pbar,
                 summarizer=summarizer
             )
-
-        # End iter
-        model.optimizer.step()
-        model.optimizer.zero_grad(set_to_none=True)
 
     if pbar is not None:
         pbar.close()
