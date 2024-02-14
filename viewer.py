@@ -9,7 +9,7 @@ from torchvision.utils import save_image
 from src.model.gaussians import Gaussians,RenderPackage
 from src.data import DataSet,get_rotating_dataset
 from src.arg import ModelParams,DataParams,PipeLineParams
-from src.utils.camera import Camera
+from src.camera import Camera
 from scipy.spatial.transform import Rotation
 
 import time

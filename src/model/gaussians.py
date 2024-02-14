@@ -9,8 +9,8 @@ from torch import nn,optim
 import torch.nn.functional as F
 from plyfile import PlyElement, PlyData
 
-from src.utils.camera import Camera
-from src.utils import colmap_utils,batch_qvec2rotmat,sigmoid_inv
+from src.camera import Camera
+from src.utils import colmap_utils,qvec2rotmat,sigmoid_inv
 
 # An instance of this is returned by the `Gaussians.render` method
 RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask"])
@@ -623,7 +623,7 @@ class Gaussians(nn.Module):
             mean=torch.zeros((scales_split.shape[0],3), device=self.device),
             std=self.act_scales(scales_split),
         )
-        rotmats = batch_qvec2rotmat(self.act_quats(quats_split.detach()))
+        rotmats = qvec2rotmat(self.act_quats(quats_split.detach()))
 
         # Get mean as sum of noise and original mean
         means_split = self.means[split_cond].repeat( N, 1 ) + torch.bmm(rotmats, noise.unsqueeze(-1)).squeeze(-1)

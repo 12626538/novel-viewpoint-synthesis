@@ -2,8 +2,8 @@ import os
 import random
 
 from src.utils.colmap_utils import *
-from src.utils.camera import Camera
-from src.utils import qvec2rotmat,image_path_to_tensor,focal2fov
+from src.camera import Camera,OptimizableCamera
+from src.utils import qvec2rotmat_np,image_path_to_tensor,focal2fov
 
 class DataSet:
     """
@@ -79,7 +79,7 @@ class DataSet:
             # Add Camera instance to dataset
             cameras.append(Camera(
                 gt_image=image_path_to_tensor( os.path.join(images_folder, extr['name']), rescale=rescale ),
-                R=qvec2rotmat(extr['qvec']),
+                R=qvec2rotmat_np(extr['qvec']),
                 t=extr['tvec'],
                 fovx=focal2fov(intr['fx'], intr['width']),
                 fovy=focal2fov(intr['fy'], intr['height']),
@@ -157,7 +157,7 @@ class DataSet:
                 I = image_path_to_tensor( os.path.join(source_path, images_folder, fname), rescale=rescale)
 
             # Add Camera instance
-            cameras.append(Camera(
+            cameras.append(OptimizableCamera(
                 R=extr[:3,:3],
                 t=extr[:3,3],
                 device=device,

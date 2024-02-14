@@ -9,7 +9,7 @@ def get_rotating_dataset(
         device='cuda',
     ) -> DataSet:
     from scipy.spatial.transform import Rotation
-    from src.utils.camera import Camera
+    from src.camera import Camera
 
     rotvecs = np.linspace(0,2*np.pi,num_cameras).reshape(-1,1) * rotation_axis
     rotmats = Rotation.from_rotvec(rotvecs).as_matrix()
