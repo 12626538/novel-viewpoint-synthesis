@@ -10,10 +10,11 @@ then
 fi
 
 python3 $CODE_DIR/train.py \
-    -s "$DATA_DIR/3du_data_2" \
-    --rescale 1 \
+    -s "$DATA_DIR/3du_data_5/gsplat" \
     --device cuda:0 \
-    --num-points 10000 \
+    --load-checkpoint "$DATA_DIR/3du_data_5/gsplat/pointcloud.ply" \
+    --model-name "3du_data_5_optimize_densify_color" \
     --test-at 5000 7000 11000 14000 17000 20000 25000 30000 \
     --save-at 7000 22000 30000 \
-    --max-screen-size 50
+    --max-screen-size 50 \
+    --max-density 0.001

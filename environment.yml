@@ -16,3 +16,7 @@ dependencies:
   - pip:
     - submodules/gsplat
     - torcheval
+  # Optional
+  - moviepy=1.0.3
+  - tensorboard=2.12.1
+  - matplotlib
