@@ -4,14 +4,16 @@ import open3d as o3d
 import video3d
 import cv2
 
+import tqdm
+
 
 def create_point_cloud(
-        video3d_file,
-        output_dir,
-        dname_images='images',
-        fname_ply='pointcloud.ply',
-        fname_intr='inv_intrinsic_array.npy',
-        fname_extr='pose_array.npy',
+        video3d_file:str,
+        output_dir:str,
+        dname_images:str='images',
+        fname_ply:str='pointcloud.ply',
+        fname_intr:str='intrinsics.npy',
+        fname_extr:str='poses.npy',
     ):
     """
     Function that createa a .ply point cloud from a video3d file.
@@ -51,16 +53,50 @@ def create_point_cloud(
     intrinsics = []
     extrinsics = []
     frame_id = 0
-    for i, frame in enumerate(video3d_reader):
+    for i, frame in tqdm.tqdm(enumerate(video3d_reader)):
 
         if frame is None: break;
-        if i % 10 != 0: continue;
+        # if i % 10 != 0: continue;
+        if i >= 300:
+            break
 
         # Read data
-        info = frame.info()
-        img = frame.img()
-        depth = np.squeeze(frame.depth())
+        info:dict = frame.info()
+        img:np.ndarray = frame.img().astype(np.uint8)
+        depth:np.ndarray = np.squeeze(frame.depth())
         confidence = np.squeeze(frame.confidence())
+
+        camera_intrinsics = np.squeeze(np.array(info['cameraIntrinsics'])).T
+        intrinsics.append(camera_intrinsics)
+
+        camera_extrinsics = np.squeeze(np.array(info['localToWorld'])).T
+        extrinsics.append(camera_extrinsics)
+
+        # from src.camera import Camera
+        # from src.utils import focal2fov
+        # import torch
+
+        # print(list(info.keys()))
+        # intr = camera_intrinsics
+        # extr = np.linalg.inv(camera_extrinsics)
+        # H,W = img.shape[:2]
+
+        # VP = np.array(info['viewProjectionMatrix']).squeeze()
+        # cam = Camera(
+        #     R=extr[:3,:3],
+        #     t=extr[:3,3],
+        #     device='cpu',
+        #     fovx=focal2fov(intr[0,0], W)*2,
+        #     fovy=focal2fov(intr[1,1], H)*2,
+        #     gt_image=torch.from_numpy(img).permute(2,0,1),
+        # )
+        # print(intr)
+        # print(np.rad2deg(cam.fovx), np.rad2deg(cam.fovy))
+        # return
+
+        # Save frame
+        fname = os.path.join(output_images, f'{frame_id:06d}.png')
+        cv2.imwrite(fname, img)
 
         # Reszie image to match depth info
         row_ratio = depth.shape[0] / img.shape[0]
@@ -68,16 +104,15 @@ def create_point_cloud(
         img = cv2.resize(img, (depth.shape[1], depth.shape[0]))
 
         # Combine color and depth
-        color_image = o3d.geometry.Image(img.astype(np.uint8))
+        color_image = o3d.geometry.Image(np.array(img[:,:,::-1]))
         depth_raw = depth.astype(np.uint16)
         depth_image = np.zeros((depth.shape[0], depth.shape[1]), dtype=np.uint16)
         depth_image[confidence >= 2] = depth_raw[confidence >= 2]
         depth_image = o3d.geometry.Image(depth_image)
         rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            color_image, depth_image, depth_scale=1000, depth_trunc=5.0)
+            color_image, depth_image, depth_scale=1000, depth_trunc=5.0,convert_rgb_to_intensity=False)
 
-        # Get intrinsics
-        camera_intrinsics = np.squeeze(np.array(info['cameraIntrinsics'])).T
+        # Update intrinsics after rescaling
         fx = camera_intrinsics[0, 0] * col_ratio * 0.5
         fy = camera_intrinsics[1, 1] * row_ratio * 0.5
         cx = camera_intrinsics[0, 2] * col_ratio * 0.5
@@ -92,27 +127,22 @@ def create_point_cloud(
             o3d_camera_intrinsics,
         )
 
-        # Convert points to world coordinates
-        local_to_world_matrix = np.squeeze(np.array(info['localToWorld'])).T
-        pcd.transform(local_to_world_matrix)
+
+        # # Convert points to world coordinates
+        pcd.transform(camera_extrinsics)
 
         # Save results
-        intrinsics.append(np.squeeze(np.array(o3d_camera_intrinsics)))
-        extrinsics.append(local_to_world_matrix)
         point_clouds.append(pcd)
 
-        # Save frame
-        fname = os.path.join(output_images, f'{frame_id:06d}.png')
-        cv2.imwrite(fname, img.astype(np.uint8))
 
         frame_id += 1
 
     # Save in- and extrinsics as a big numpy array
-    intrinsics = np.concatenate(intrinsics, axis=0)
+    intrinsics = np.stack(intrinsics, axis=0)
     with open(output_intr, 'wb') as f:
         np.save(f, intrinsics)
 
-    extrinsics = np.concatenate(extrinsics, axis=0)
+    extrinsics = np.stack(extrinsics, axis=0)
     with open(output_extr, 'wb') as f:
         np.save(f, extrinsics)
 
@@ -121,27 +151,15 @@ def create_point_cloud(
     for pc in point_clouds[1:]:
         combined_point_cloud += pc
 
+    # Downsample to 50K points
+    N = len(combined_point_cloud.points)
+    if N>50_000:
+        combined_point_cloud = combined_point_cloud.random_down_sample( 50_000 / N )
 
-    # Extracting coordinates from the point cloud
-    coords = np.asarray(combined_point_cloud.points) #* 1000
-
-    # Applying transformations
-    # coords[:, 0] = np.round(coords[:, 0] / 10) * 10
-    # coords[:, 1] = np.round(coords[:, 1] / 100) * 100
-    # coords[:, 2] = np.round(coords[:, 2] / 10) * 10
-    unique_coords, unique_ind = np.unique(coords, return_index=True, axis=0)
-    coords = coords[unique_ind]
-
-    # Updating the point cloud
-    combined_point_cloud.points = o3d.utility.Vector3dVector(coords)
-
-    o3d.io.write_point_cloud(output_ply, combined_point_cloud)
+    o3d.io.write_point_cloud(output_ply, combined_point_cloud,write_ascii=True)
 
 
 # video3d_file = "../data1/data/begin_good_day_212/upload/2023_11_01__11_14_30/video.v3dc"
-video3d_file = '/home/jesse/data1/data/begin_good_day_212/process/floor_0/video.v3dc'
-output_dir = "/home/jesse/output/created_pcs/sendtojippls/"
+video3d_file = '/home/jip/data1/3du_data_5/begin_good_day_212/upload/2023_11_01__11_14_30/video.v3dc'
+output_dir = "/home/jip/data1/3du_data_5/gsplat"
 create_point_cloud(video3d_file, output_dir)
-
-print("To copy this to Jip:")
-print(f"scp -r {output_dir} jip@deepserver3.3duniversum.com:/home/jip/data1/jesse/")

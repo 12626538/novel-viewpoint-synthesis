@@ -86,7 +86,8 @@ def create_window(window_size, channel) -> torch.Tensor:
     window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
     return window.requires_grad_(False)
 
-class DSSIMLoss(torch.nn.Module):
+
+class SSIM(torch.nn.Module):
     def __init__(
         self,
         num_channel:int=3,
@@ -120,6 +121,10 @@ class DSSIMLoss(torch.nn.Module):
         ssim_map = ((2 * mux_muy + C1) * (2 * sigmaxy + C2)) / ((mux_sq + muy_sq + C1) * (sigmaxx + sigmayy + C2))
 
         if self.size_average:
-            return 1. - ssim_map.mean()
+            return ssim_map.mean()
         else:
-            return 1. - ssim_map.mean(1).mean(1).mean(1)
+            return ssim_map.mean(1).mean(1).mean(1)
+
+class DSSIMLoss(SSIM):
+    def forward(self, X:Tensor, Y:Tensor) -> Tensor:
+        return 1. - super().forward(X,Y)

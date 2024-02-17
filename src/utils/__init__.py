@@ -94,22 +94,21 @@ def qvec2rotmat(q:torch.Tensor) -> torch.Tensor:
 
 def get_projmat(znear:float, zfar:float, fovx:float, fovy:float) -> np.ndarray:
     """
-    https://github.com/nerfstudio-project/nerfstudio/blob/9e33b437dff6df5a9579c04b1eba46640df88a96/nerfstudio/models/gaussian_splatting.py#L73
+    From http://www.songho.ca/opengl/gl_projectionmatrix.html
     """
-    t = znear * math.tan(0.5 * fovy)
-    b = -t
-    r = znear * math.tan(0.5 * fovx)
-    l = -r
     n = znear
     f = zfar
 
+    a = 1 / math.tan( fovx / 2 )
+    b = 1 / math.tan( fovy / 2 )
+
     zsign = 1.0
-    return np.array(
-        [[2 * n / (r - l), 0.0, (r + l) / (r - l), 0.0],
-        [0.0, 2 * n / (t - b), (t + b) / (t - b), 0.0],
-        [0.0, 0.0, (f + n) / (f - n), -1.0 * zsign * f * n / (f - n)],
-        [0.0, 0.0, zsign, 0.0]],
-    )
+    return np.array([
+        [  a, 0.0,          0.0,                 0.0],
+        [0.0,   b,          0.0,                 0.0],
+        [0.0, 0.0, -(f+n)/(f-n), zsign*(2*f*n)/(f-n)],
+        [0.0, 0.0,        zsign,                 0.0]
+    ])
 
 def get_viewmat(R:np.ndarray, t:np.ndarray) -> np.ndarray:
         """

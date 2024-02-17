@@ -13,13 +13,13 @@ class Camera(object):
             self,
             # INTRINSICS
             fovx:float=1.5708,fovy:float=1.0472,
-            H:int=1920,W:int=1080,
             znear:float=0.01, zfar:float=100.,
             # EXTRINSICS
             R:np.ndarray=np.eye(3),
             t:np.ndarray=np.zeros(3),
             #MISC
             gt_image:torch.Tensor=None,
+            H:int=1920,W:int=1080,
             name:str=None,
             device='cuda',
         ):
@@ -43,13 +43,13 @@ class Camera(object):
         - `t:np.ndarray` - translation vector of size `3,`
 
         ### Misc
-        - `device='cuda'` - What device to put all tensors to, default is CUDA
-        - `H:int`,`W:int` - Height and width of generated view,
-            overwritten if `gt_image` is set. Defaults to fullHD (`1920x1080`)
         - `gt_image:Optional[torch.Tensor]` - Optional; ground truth image,
             if unset, specify `H,W` instead
+        - `H:int`,`W:int` - Height and width of generated view,
+            overwritten if `gt_image` is set. Defaults to fullHD (`1920x1080`)
         - `name:str` - Unique identifier of camera, defaults to `cam{uid:05d}.png`
             for a unique, incrementing id
+        - `device='cuda'` - What device to put all tensors to, default is CUDA
         """
         super().__init__()
 
@@ -145,7 +145,7 @@ class Camera(object):
         return (
             "Camera\n"
             f"\tname='{self.name}'\n"
-            f"\tviewmat='{self.viewmat}'\n"
-            f"\tprojmat='{self.projmat}'\n"
             f"\tH,W='{self.H,self.W}'\n"
+            f"\tviewmat=\n{self.viewmat}\n"
+            f"\tprojmat=\n{self.projmat}\n"
         )

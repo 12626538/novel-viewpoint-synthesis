@@ -100,11 +100,12 @@ class DataSet:
     def from_intr_extr(
             cls,
             source_path:str,
-            intrinsics_file:str='inv_intrinsic_array.npy',
-            extrinsics_file:str='pose_array.npy',
+            intrinsics_file:str='intrinsics.npy',
+            extrinsics_file:str='poses.npy',
             images_folder:str='images',
             rescale:int=1,
             device='cuda',
+            data_folder=None,# IGNORED
             **kwargs,
         ) -> 'DataSet':
         """
@@ -122,8 +123,6 @@ class DataSet:
             Will try to see if `[source_path]/[images_folder]_[rescale]/` exists
             and read images from there
         """
-        # This argument gets passed by default, remove it.
-        del kwargs['data_folder']
 
         source_path = os.path.abspath(source_path)
 
@@ -135,15 +134,17 @@ class DataSet:
         assert intrs.shape[0] == extrs.shape[0], \
             "Intrinsics and extrinsics do not share the same first dim"
 
-        N = intrs.shape[0]
-        step = 1
-
-        if N > 200:
-            step = N//100
         cameras = []
-        for idx in range(0, N, step):
-            print("\rParsing cameras and images... {:4}/{:4}".format(idx,N),flush=True,end="")
-            intr = np.linalg.inv(intrs[idx])
+        N = intrs.shape[0]
+
+        # TODO: improve codebase to be able to deal with large scenes
+        if N>300:
+            print("!WARNING! Dataset contains >300 images, "
+                  "current implementation doesnt support big datasets")
+
+        for idx in range(N):
+            print("\rParsing cameras and images... {:4}/{:4}".format(idx+1,N),flush=True,end="")
+            intr = intrs[idx]
             extr = np.linalg.inv(extrs[idx])
 
             fname = f'{idx:06d}.png'
@@ -151,6 +152,7 @@ class DataSet:
             # Get full-scale image for fov
             I = image_path_to_tensor( os.path.join(source_path, images_folder, fname))
             H,W = I.shape[-2:]
+
 
             # Get the actually desired image
             if rescale!= 1:
@@ -161,9 +163,10 @@ class DataSet:
                 R=extr[:3,:3],
                 t=extr[:3,3],
                 device=device,
-                fovx=focal2fov(intr[0,0], W),
-                fovy=focal2fov(intr[1,1], H),
+                fovx=focal2fov(intr[0,0], W)*2, # TODO figure out why this is off by a factor of 2
+                fovy=focal2fov(intr[1,1], H)*2, # ditto
                 gt_image=I,
+                name=fname
             ))
 
         print()

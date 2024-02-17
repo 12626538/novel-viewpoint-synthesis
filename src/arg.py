@@ -1,5 +1,6 @@
 import os
 import datetime
+import configparser
 from argparse import ArgumentParser,Namespace
 
 class ParamGroup(object):
@@ -63,7 +64,7 @@ class ModelParams(ParamGroup):
     def __init__(self, *arg,**kwarg):
         self.num_points = 200_000
 
-        self.sh_degree = 3
+        self.sh_degree = 2
 
         self.lr_positions = 0.00016
         self.lr_scales    = 0.005
@@ -137,7 +138,7 @@ class PipeLineParams(ParamGroup):
         self.load_checkpoint = ''
 
         # For tensorboard
-        self.log_dir="logs/{}".format(self.model_name)
+        self.log_dir="models"
 
         self.random_background = False
         self.white_background = False
@@ -153,6 +154,79 @@ class PipeLineParams(ParamGroup):
             )
 
         args.model_dir = os.path.join( os.path.abspath(args.model_dir), args.model_name)
-        args.log_dir = os.path.abspath(args.log_dir)
+        args.log_dir = os.path.join( os.path.abspath(args.log_dir), args.model_name)
+
+        os.makedirs(args.model_dir, exist_ok=True)
+        os.makedirs(args.log_dir, exist_ok=True)
 
         return super().extract(args)
+
+def get_args(*groups:type[ParamGroup], parser=ArgumentParser("Training Novel Viewpoint Synthesis")) -> tuple[Namespace, list[Namespace]]:
+    """
+    Get args for a specified collection of parameter groups
+
+    This is a quick wrapper to deal with
+    1) Setting up a ArgumentParser
+    2) Adding some number of ParamGroups to it
+    3) Parsing the parser
+    4) Splitting the parsed arguments back into parameter groups
+
+    Parameters:
+    - `groups` - Any positional arguments should be ParamGroup classes
+        (not instances!)
+    - `parser` - Optionally, a pre-defined `ArgumentParser` can be passed
+        as `parser` kwarg. This allows user to add arguments before passing it
+        through this function
+
+    Returns:
+    - `args:Namespace` - The args returned by the `parser`
+    - For each `group` passed as input, a `Namespace` instance for that
+        parameter group is returned.)
+
+    Example:
+    >>> args, (args_data,args_model) = get_args(DataParams, ModelParams)
+
+    Is equivalent to
+    >>> parser = ArgumentParser()
+    >>> dp = DataParams(parser)
+    >>> mp = ModelParams(parser)
+    >>> args = parser.parse_args()
+    >>> args_data = dp.extract(args)
+    >>> args_model = mp.extract(args)
+    """
+
+    # Add parameter groups to parser
+    parser_groups:list[ParamGroup] = []
+    for group in groups:
+        parser_groups.append( group(parser) )
+
+    # Extract all args
+    args = parser.parse_args()
+
+    if hasattr(args, 'load_checkpoint'):
+        config = configparser.ConfigParser()
+        config['parameters'] = {}
+        config.read(os.path.join(args.load_checkpoint,'config.ini'))
+
+        for key,val in config['parameters'].items():
+            setattr(args, key, val)
+
+    # Split `args` back into groups
+    args_groups:list[Namespace] = []
+    for parser_group in parser_groups:
+        args_groups.append( parser_group.extract(args) )
+
+    if hasattr(args,'model_dir'):
+        config = configparser.ConfigParser()
+        config['parameters'] = {}
+
+        for key,value in vars(args).items():
+            config['parameters'][key] = str(value)
+
+        os.makedirs(args.model_dir,exist_ok=True)
+        with open(os.path.join(args.model_dir,'config.ini'), 'w') as f:
+            print(f.name)
+            config.write(f)
+
+    # Return `args` and all groups
+    return args, args_groups

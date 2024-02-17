@@ -10,7 +10,8 @@ except ModuleNotFoundError:
 
 import torch
 from torchvision.utils import save_image
-from torcheval.metrics import PeakSignalNoiseRatio
+from torcheval.metrics.functional import peak_signal_noise_ratio as psnr
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -21,8 +22,8 @@ except ModuleNotFoundError:
 
 from src.model.gaussians import Gaussians,RenderPackage
 from src.data import DataSet
-from src.utils.loss_utils import L1Loss,DSSIMLoss,CombinedLoss
-from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams
+from src.utils.loss_utils import L1Loss,DSSIMLoss,SSIM,CombinedLoss
+from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams,get_args
 from src.camera import OptimizableCamera
 
 def train_report(
@@ -33,7 +34,7 @@ def train_report(
     train_args:TrainParams,
     pipeline_args:PipeLineParams,
     rendering_pkg:RenderPackage,
-    loss:float,
+    smoothed_loss:float,
     loss_fn:callable,
     pbar:'tqdm'=None,
     summarizer:'SummaryWriter'=None,
@@ -41,28 +42,25 @@ def train_report(
     # Update progress bar
     if pbar is not None and iter%10 == 0:
         pbar.set_postfix({
-            'loss':f"{loss:.2e}",
+            'loss':f"{smoothed_loss:.2e}",
             '#splats': f"{model.num_points:.2e}",
         }, refresh=False)
         pbar.update(10)
 
-    elif pbar is None and iter%(train_args.iterations//100) == 0:
-        print("#",end="",flush=True)
-
     # Update summarizer
     if summarizer is not None:
         if iter%10 == 0:
-            summarizer.add_scalar("Train/Loss", loss, iter)
+            summarizer.add_scalar("Train/Loss", smoothed_loss, iter)
             for group in model.optimizer.param_groups:
                 summarizer.add_scalar(f"LearningRate/{group['name']}", group['lr'], iter)
 
-            if iter <= train_args.densify_until:
-                summarizer.add_scalar("Pruning/Num of splats", model.num_points, iter)
+            summarizer.add_scalar("Pruning/Num of splats", model.num_points, iter)
+            if iter <= train_args.densify_until+10:
                 summarizer.add_scalar("Pruning/Num splats split",model._n_split, iter)
                 summarizer.add_scalar("Pruning/Num splats cloned",model._n_clone, iter)
                 summarizer.add_scalar("Pruning/Num splats pruned",model._n_prune, iter)
 
-            summarizer.add_histogram("dev/radii", rendering_pkg.radii[rendering_pkg.visibility_mask].detach().cpu().numpy().clip(0,train_args.max_screen_size+1), iter)
+            # summarizer.add_histogram("dev/radii", rendering_pkg.radii[rendering_pkg.visibility_mask].detach().cpu().numpy().clip(0,train_args.max_screen_size+1), iter)
 
         if iter==1 or iter%100 == 0:
 
@@ -70,7 +68,7 @@ def train_report(
             render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
             save_image(render,"renders/latest.png")
 
-            if iter%300 == 0:
+            if iter==1 or iter%300 == 0:
                 summarizer.add_image(
                     "Dev/Render",
                     render,
@@ -90,40 +88,64 @@ def train_report(
     if iter in train_args.test_at:
         torch.cuda.empty_cache()
 
-        # Get testing cameras
-        dataset.test()
-
         # Compute average over PSNR and loss
-        psnr = PeakSignalNoiseRatio()
-        scores = []
-        losses = []
+        metrics = {
+            'PSNR':psnr,
+            'loss':loss_fn,
+            'SSIM':SSIM(device=device)
+            # TODO: add LPIPS
+        }
+        stats_lsts = {
+            metric:[] for metric in metrics
+        }
+        reduction = {
+            'PSNR': np.mean,
+            'loss': np.mean,
+            'SSIM': np.mean,
+        }
 
         print("TESTING", "+"*50)
 
-        bg = torch.zeros(3).float().to(device)
+        if not pipeline_args.random_background and pipeline_args.white_background:
+            bg = torch.ones(3).float().to(device)
+        else:
+            bg = torch.zeros(3).float().to(device)
+
+        # Get testing cameras
+        dataset.test()
         for cam in dataset:
 
             pkg = model.render(cam, bg=bg)
 
-            # Add scores
-            psnr.update(pkg.rendering, cam.gt_image)
-            scores.append( psnr.compute().item() )
+            # Get result for each metric to test on
+            for metric,metric_func in metrics.items():
 
-            losses.append( loss_fn(pkg.rendering, cam.gt_image).item() )
+                # Compute metric
+                stat = metric_func(pkg.rendering, cam.gt_image)
+
+                # convert Tensor with a single number to a float
+                if isinstance(stat, torch.Tensor) and stat.squeeze().ndim == 0:
+                    stat = stat.item()
+
+                # Add metric
+                stats_lsts[metric].append( stat )
 
             # Save rendered images in summarizer
             if summarizer is not None:
                 summarizer.add_images(f"test/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)), iter )
 
-        # Report on results
-        score = np.mean(scores)
-        test_loss = np.mean(losses)
+            # TODO: save images during testing
+            # save_image(torch.hstack((pkg.rendering, cam.gt_image)),cam.name)
 
-        print(f"PSNR: {np.mean(scores)}")
-        print(f"Loss: {np.mean(losses)}")
-        if summarizer is not None:
-            summarizer.add_scalar("test/psnr", score, iter)
-            summarizer.add_scalar("test/loss", test_loss, iter)
+        # Reduce results
+        stats = {}
+        for metric,values in stats_lsts.items():
+            # Compute the final value
+            stats[metric] = reduction[metric](values)
+
+            print(metric, stats[metric])
+            if summarizer is not None:
+                summarizer.add_scalar(f"test/{metric}", stats[metric], iter)
 
         dataset.train()
 
@@ -140,6 +162,10 @@ def train_loop(
         ( L1Loss(), 1.-train_args.lambda_dssim ),
         ( DSSIMLoss(device=device), train_args.lambda_dssim )
     )
+
+    # Keep a running (smoothed) loss
+    loss_smooth_mult = 1-1/len(dataset)
+    loss_smooth = 0.
 
     # Use Tensorboard
     summarizer = None
@@ -160,9 +186,22 @@ def train_loop(
 
     cam_optim = torch.optim.Adam(
         params=[
-            cam.parameters() for cam in dataset.cameras if isinstance(cam, OptimizableCamera)
+            {'name':cam.name, 'params':cam.parameters()}
+            for cam in dataset.cameras if isinstance(cam, OptimizableCamera)
         ]
     )
+    def lr_func(step):
+        decay_steps = 2500
+        lr_mult_init = 1e-8
+        lr_mult_final = 1
+        if step <= decay_steps:
+            # starts at 1, goes to 0
+            cosine_decay = 0.5 * (1 + np.cos(np.pi * step / decay_steps))
+
+            return cosine_decay * lr_mult_init + (1-cosine_decay)*lr_mult_final
+        else:
+            return 1
+    cam_schedule = torch.optim.lr_scheduler.LambdaLR(cam_optim, lr_lambda=lr_func)
 
     dataset_cycle = dataset.cycle()
     for iter in range(1,train_args.iterations+1):
@@ -177,6 +216,13 @@ def train_loop(
 
         # Compute gradients
         loss.backward()
+
+        # Keep a smoothed loss
+        if loss_smooth == 0:
+            loss_smooth = loss.item()
+        else:
+            loss_smooth = loss_smooth_mult * loss_smooth \
+                + (1-loss_smooth_mult) * loss.item()
 
         # Optimize parameters
         model.optimizer.step()
@@ -221,29 +267,35 @@ def train_loop(
                 train_args=train_args,
                 pipeline_args=pipeline_args,
                 rendering_pkg=rendering_pkg,
-                loss=loss,
+                smoothed_loss=loss_smooth,
                 loss_fn=loss_fn,
                 pbar=pbar,
                 summarizer=summarizer
             )
+
+        cam_schedule.step()
 
     if pbar is not None:
         pbar.close()
 
 if __name__ == '__main__':
 
-    parser = argparse.ArgumentParser("Training Novel Viewpoint Synthesis")
-    dp = DataParams(parser)
-    mp = ModelParams(parser)
-    tp = TrainParams(parser)
-    pp = PipeLineParams(parser)
+    args,(data_args,model_args,train_args,pipeline_args) = get_args(
+        DataParams, ModelParams, TrainParams, PipeLineParams
+    )
 
-    args = parser.parse_args()
+    # parser = argparse.ArgumentParser("Training Novel Viewpoint Synthesis")
+    # dp = DataParams(parser)
+    # mp = ModelParams(parser)
+    # tp = TrainParams(parser)
+    # pp = PipeLineParams(parser)
 
-    data_args = dp.extract(args)
-    model_args = mp.extract(args)
-    train_args = tp.extract(args)
-    pipeline_args = pp.extract(args)
+    # args = parser.parse_args()
+
+    # data_args = dp.extract(args)
+    # model_args = mp.extract(args)
+    # train_args = tp.extract(args)
+    # pipeline_args = pp.extract(args)
 
     if pipeline_args.no_pbar:
         USE_TQDM = False
@@ -255,7 +307,7 @@ if __name__ == '__main__':
         args.device = 'cuda:0'
 
     # 3DU datasets are from intrinsics and extrinsics
-    if data_args.source_path[:-1].endswith("3du_data_"):
+    if "3du_data_" in data_args.source_path or "jesse" in data_args.source_path:
         print("Reading dataset from intrinsics/extrinsics...")
         dataset = DataSet.from_intr_extr(
             device=args.device,

@@ -13,7 +13,7 @@ from src.camera import Camera
 from src.utils import colmap_utils,qvec2rotmat,sigmoid_inv
 
 # An instance of this is returned by the `Gaussians.render` method
-RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask"])
+RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask","alpha"])
 
 class Gaussians(nn.Module):
     BLOCK_X, BLOCK_Y = 16, 16
@@ -130,9 +130,15 @@ class Gaussians(nn.Module):
         # Extract colors
         colors = None
         if properties.issuperset({'red','green','blue'}):
-            colors = np.stack([vertex['red'], vertex['green'], vertex['blue']], axis=1) / 255.0
-            kwargs['colors'] = torch.from_numpy(colors).to(device).reshape(-1, 1, 3)
-            kwargs['sh_degree']=0
+            colors = (1. + np.stack([vertex['red'], vertex['green'], vertex['blue']], axis=1, dtype=np.float32)) / (255.0+2.)
+            colors = sigmoid_inv( colors )
+
+            kwargs['sh_degree'] = kwargs.get('sh_degree',2)
+            D = (kwargs['sh_degree']+1)**2
+            features = np.zeros((colors.shape[0],D, colors.shape[1]))
+            features[:,0,:] = colors
+
+            kwargs['colors'] = torch.from_numpy(features).to(device)
 
         # Convert color_1,color_2,...,color_C to NxC numpy array
         elif 'color_1' in properties:
@@ -330,7 +336,8 @@ class Gaussians(nn.Module):
 
         # Initialize scales
         if scales is None:
-            scales = torch.log( torch.ones(num_points, 3, device=self.device) / (scene_extend*5) )
+            # scales = torch.log( torch.ones(num_points, 3, device=self.device) / (scene_extend*10) )
+            scales = torch.log( torch.ones(num_points, 3, device=self.device) * .01 )
 
         # Initialize rotation
         if quats is None:
@@ -436,6 +443,7 @@ class Gaussians(nn.Module):
         equal to `Gaussians.num_points`. Will attempt to retain grads, can be
         used for densification stats.
         - `visibility_mask:torch.Tensor` - Mask of visible splats, shape `N`
+        - `alpha:torch.Tensor` - Alpha value of each pixel, shape `H,W`
         """
 
         # Set up number of tiles in X,Y,Z direction
@@ -472,20 +480,23 @@ class Gaussians(nn.Module):
         except:
             pass
 
-        viewdirs = self.means.detach() - torch.from_numpy(camera.loc).float().to(self.device).unsqueeze(0)
-        viewdirs /= torch.linalg.norm(viewdirs,dim=1,keepdim=True)
+        if self.sh_degree_max > 0:
+            viewdirs = self.means.detach() - torch.from_numpy(camera.loc).float().to(self.device).unsqueeze(0)
+            viewdirs /= torch.linalg.norm(viewdirs,dim=1,keepdim=True)
 
-        # Convert SH features to features
-        # TODO: these features should still be properly converted to colors?
-        colors = gsplat.spherical_harmonics(
-            degrees_to_use=self.sh_degree_current,
-            viewdirs=viewdirs,
-            coeffs=self.colors,
-        )
+            # Convert SH features to features
+            # TODO: these features should still be properly converted to colors?
+            colors = gsplat.spherical_harmonics(
+                degrees_to_use=self.sh_degree_current,
+                viewdirs=viewdirs,
+                coeffs=self.colors,
+            )
+        else:
+            colors = self.colors.view(-1,3)
 
 
         # Generate image
-        out_img = gsplat.rasterize_gaussians(
+        out_img,out_alpha = gsplat.rasterize_gaussians(
             xys=xys,
             depths=depths,
             radii=radii,
@@ -496,13 +507,15 @@ class Gaussians(nn.Module):
             img_height=camera.H,
             img_width=camera.W,
             background=bg,
-        ).permute(2,0,1)
+            return_alpha=True,
+        )
 
         return RenderPackage(
-            rendering=out_img,
+            rendering=out_img.permute(2,0,1),
             xys=xys,
             radii=radii,
-            visibility_mask=(radii > 0).squeeze()
+            visibility_mask=(radii > 0).squeeze(),
+            alpha=out_alpha
         )
     forward=render
 
