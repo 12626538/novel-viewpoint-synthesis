@@ -1,5 +1,6 @@
 import os
 import random
+import json
 
 from src.utils.colmap_utils import *
 from src.camera import Camera,OptimizableCamera
@@ -9,6 +10,10 @@ class DataSet:
     """
     DataSet super class. Is mostly just a fancy wrapper for a list of
     `Camera` instances.
+
+    By default, `Camera` instances are split such that every 8th camera
+    is considered a test view, and the remaining cameras are views used for
+    training.
 
     Usage: Iterate cameras in order (or shuffled if `shuffled=True`)
     >>> dataset = DataSet(cameras, shuffled=False)
@@ -91,7 +96,6 @@ class DataSet:
         # Initialize DataSet instance
         return DataSet(
             cameras=cameras,
-            device=device,
             **kwargs,
         )
 
@@ -174,33 +178,86 @@ class DataSet:
         # Initialize DataSet instance
         return DataSet(
             cameras=cameras,
-            device=device,
             **kwargs,
+        )
+
+
+    @classmethod
+    def from_3du(
+            cls,
+            source_path:str,
+            cameras_file:str='cameras.json',
+            images_folder:str='images',
+            rescale:int=1,
+            device='cuda',
+            data_folder=None,# IGNORED
+            **kwargs,
+        ) -> 'DataSet':
+        """
+        Construct DataSet instance from intrinsics and extrinsics file
+
+        Parameters:
+        - `source_path:str` Root directory of data set
+        - `cameras_file:str='camearas.json'` Camera intrinsics,
+            relative to `source_path`
+        - `images_folder:str='images/'` Folder with images, relative to
+            `source_path`
+        - `rescale:Optional[int]` Downsample images to `1/rescale` scale.
+            Will try to see if `[source_path]/[images_folder]_[rescale]/` exists
+            and read images from there
+        """
+
+        source_path = os.path.abspath(source_path)
+        cameras_file = os.path.join(source_path, cameras_file)
+
+        cameras = []
+
+        with open(cameras_file,'r') as f:
+            line = f.readline()
+            idx=1
+
+            while line:
+                print(f"\rReading cameras... {idx}",end="",flush=True)
+
+                camera = json.loads(line)
+
+                # Get ground truth image
+                I = image_path_to_tensor( os.path.join(source_path, images_folder, camera['image']), rescale=rescale)
+
+                # Add Camera instance
+                cameras.append(Camera(
+                    R=np.array(camera['R']),
+                    t=np.array(camera['t']),
+                    device=device,
+                    fovx=camera['fovx'],
+                    fovy=camera['fovy'],
+                    cx_frac=camera['cx_frac'],
+                    cy_frac=camera['cy_frac'],
+                    gt_image=I,
+                    name=camera['image'],
+                ))
+
+                line = f.readline()
+                idx+=1
+
+        print()
+
+        # Initialize DataSet instance
+        return DataSet(
+            cameras=cameras,
         )
 
 
     def __init__(
             self,
             cameras:list[Camera],
-            device='cuda',
-            shuffled:bool=True,
-            split:bool=True,
         ) -> None:
         """
         Initialize DataSet instance from a list of cameras
 
         Parameters:
         - `cameras:list[Camera]` A list of cameras to use
-        - `shuffled:bool=True` Whether to shuffle the cameras when iterating
-            this instance
-        - `split:bool=True` If set to True, split cameras into train/test set,
-            yielding different cameras in 'train' or 'test' mode (set by
-            `dataset.train()` and `dataset.test()`). Otherwise, all cameras
-            are yielded in both methods.
         """
-
-        self.device = device
-        self.shuffled = shuffled
 
         # Make sure cameras appear in the same order every run
         self.cameras = sorted(cameras, key=lambda cam:cam.name)
@@ -213,16 +270,13 @@ class DataSet:
         self.scene_extend:float = 1.1 * np.linalg.norm(camera_positions - center_camera, axis=1).max()
 
         # Create train and test split
-        self._train = True
-        if split:
-            self._train_idxs = list(idx for idx in range(len(self.cameras)) if idx%8 != 0)
-            self._test_idxs = list(idx for idx in range(len(self.cameras)) if idx%8 == 0)
-        else:
-            self._train_idxs = list(range(len(self.cameras)))
-            self._test_idxs = self._train_idxs
-
+        self._train_idxs = list(idx for idx in range(len(self.cameras)) if idx%8 != 0)
+        self._test_idxs = list(idx for idx in range(len(self.cameras)) if idx%8 == 0)
 
     def __len__(self):
+        """
+        Total number of Camera instances in this dataset
+        """
         return len(self.cameras)
 
 
@@ -230,52 +284,41 @@ class DataSet:
         """
         Iterate dataset
         """
-        _idxs = (self._train_idxs if self._train else self._test_idxs).copy()
-
-        if self.shuffled and self._train:
-            random.shuffle(_idxs)
-
-        for id in _idxs:
-            yield self.cameras[id]
+        return self.iter(partition="all")
 
 
-    def cycle(self):
+    def iter(self, partition="train", cycle=False, shuffle=False):
         """
-        Create infinite iterator cycling through cameras
+        Iterate dataset with additional options
 
-        This method will asure all cameras are iterated at least once
-        before any will be yielded a second time.
-
-        Note that, once called, this generator is not effected by the `shuffle`
-        and `.train()`/`.test()` properties/methods.
-
-        If `ColmapDataSet.shuffled` is set to `True`, cameras will be yielded
-        in random order, and is reshuffled every time all cameras are iterated,
-        this behavior is unlike `itertools.cycle(dataset)`.
+        Parameters:
+        - `partition:Literal['train'|'test'|'all']` - What partition of the data
+            to use. Default is trainset
+        - `cycle:bool` - Whether to keep iterating infinitily. Differs from
+            `itertools.cycle` in that - if `shuffle=True` - the dataset will
+            reshuffle itself after yielding all instances once. Default is False
+        - `shuffle:bool` - Whether to yield instances in a random order.
         """
-
-        _idxs = (self._train_idxs if self._train else self._test_idxs).copy()
-        shuffle = self.shuffled and self._train
-
+        # Keep cycling...
         while True:
 
-            if shuffle:
-                random.shuffle(_idxs)
+            # Get camera indices for selected set
+            if partition == "train":
+                idxs = self._train_idxs.copy()
+            elif partition=="test":
+                idxs = self._test_idxs.copy()
+            else:
+                idxs = list(range(len(self)))
 
-            for id in _idxs:
-                yield self.cameras[id]
+            # Shuffle data
+            if shuffle: random.shuffle(idxs)
 
+            # Iterate cameras
+            for idx in idxs:
+                yield self.cameras[idx]
 
-    def train(self):
-        """Set dataset in 'train mode', yielding only the cameras selected as
-        training cameras when iterating. Note that this does not affect dataset.cameras"""
-        self._train=True
-
-
-    def test(self):
-        """Set dataset in 'test mode', yielding only the cameras selected as
-        testing cameras when iterating. Note that this does not affect dataset.cameras"""
-        self._train=False
+            # Stop cycling
+            if not cycle: break
 
 
     def oneup_scale(self):
@@ -286,6 +329,7 @@ class DataSet:
         For example, if the current scale is 8, it replaces all gt images with a
         scale 4 version.
         """
+        raise DeprecationWarning()
         # Update current scale, with a fallback of scale 1
         mapper = { 8:4, 4:2, 2:1, 1:1 }
         self.current_scale = mapper.get(self.current_scale, 1)

@@ -9,6 +9,9 @@ from src.model.gaussians import Gaussians,RenderPackage
 from src.data import DataSet,get_rotating_dataset
 from src.arg import ModelParams,DataParams,PipeLineParams
 
+os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
+from moviepy.editor import VideoClip
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser("Training Novel Viewpoint Synthesis")
@@ -69,8 +72,8 @@ if __name__ == '__main__':
     if args.reconstruct_video:
 
         # 3DU datasets are from intrinsics and extrinsics
-        if data_args.source_path[:-1].endswith("3du_data_"):
-            dataset = DataSet.from_intr_extr(device=args.device, **vars(data_args))
+        if "3du" in data_args.source_path:
+            dataset = DataSet.from_3du(device=args.device, **vars(data_args))
 
         # Paper datasets are COLMAP formatted
         else:
@@ -78,16 +81,12 @@ if __name__ == '__main__':
 
         print("Rendering video...")
 
-        os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
-        from moviepy.editor import VideoClip
-
         cameras = sorted(dataset.cameras, key=lambda cam: cam.name)
         T = len(cameras)/args.fps
         H = min(cam.H for cam in cameras)
         W = min(cam.W for cam in cameras)
 
         def make_frame(t):
-            out = np.zeros((H,2*W,3),dtype=np.uint8)
 
             # Get camera at current timestep
             i = round((t / T)*(len(cameras)-1))
@@ -96,27 +95,40 @@ if __name__ == '__main__':
             A = (camera.gt_image.detach().permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)[:H,:W]
 
             # Render camera
-            render = model.render(camera, bg=torch.zeros(3,device=args.device), glob_scale=args.glob_scale).rendering.permute(1,2,0)
+            pkg = model.render(camera, bg=torch.zeros(3,device=args.device), glob_scale=args.glob_scale)
+            render = pkg.rendering.permute(1,2,0)
             B = (render.detach().cpu().numpy()*255).astype(np.uint8)[:H,:W]
 
+            # SIDE-BY-SIDE
+            out = np.zeros((H,2*W,3),dtype=np.uint8)
             out[:H, :W] = A
             out[:H, -W:] = B
+
+
+            # ALPHA BLENDING
+            alpha = pkg.alpha.detach().cpu().numpy()[:H,:W,None]
+            out = np.zeros((H,W,3),dtype=np.uint8)
+            out[:H, :W] = alpha* B + (1-alpha)* A
             return out
 
         clip = VideoClip(make_frame, duration=T)
-        clip.write_videofile(os.path.join(out_dir, "reconstruction.mp4"),fps=args.fps)
+        clip.write_videofile(
+            os.path.join(out_dir, "reconstruction.mp4"),
+            fps=args.fps,
+            threads=5,
+            logger=None,
+        )
+        print("Written video to", os.path.join(out_dir, "reconstruction.mp4"))
 
     else:
         dataset = get_rotating_dataset(
-            distance_from_center=5,
-            center_point=np.array([0,0,0]),
+            distance_from_center=0,#5,
+            center_point=np.array([0,1,0]),
             num_cameras=240
         )
 
         print("Rendering video...")
 
-        os.environ["IMAGEIO_FFMPEG_EXE"] = "/usr/bin/ffmpeg"
-        from moviepy.editor import VideoClip
 
         cameras = sorted(dataset.cameras, key=lambda cam: cam.name)
         T = len(cameras)/args.fps

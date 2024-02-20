@@ -13,13 +13,14 @@ class Camera(object):
             self,
             # INTRINSICS
             fovx:float=1.5708,fovy:float=1.0472,
-            znear:float=0.01, zfar:float=100.,
+            cx_frac:float=.5, cy_frac:float=.5,
             # EXTRINSICS
             R:np.ndarray=np.eye(3),
             t:np.ndarray=np.zeros(3),
             #MISC
             gt_image:torch.Tensor=None,
             H:int=1920,W:int=1080,
+            znear:float=0.01, zfar:float=100.,
             name:str=None,
             device='cuda',
         ):
@@ -34,8 +35,9 @@ class Camera(object):
         Parameters to set up the projection matrix
         - `fovx:float`,`fovy:float` - Field-Of-View in X and Y direction.
             defaults to 90 and 60 degrees in x and y direction
-        - `znear:float`,`zfar:float` - Distance of near and far plane,
-            defaults to `0.01, 100`
+        - `cx_frac:float`, `cy_frac:float` - Fraction of principle points
+            in X and Y direction to the scale, such that `cx = cx_frac * W`
+            where `cx` is principle point in X direction and W is image width.
 
         ### Extrinsics
         Parameters to set up the `4x4` World-To-Camera matrix
@@ -47,6 +49,8 @@ class Camera(object):
             if unset, specify `H,W` instead
         - `H:int`,`W:int` - Height and width of generated view,
             overwritten if `gt_image` is set. Defaults to fullHD (`1920x1080`)
+        - `znear:float`,`zfar:float` - Distance of near and far plane,
+            defaults to `0.01, 100`
         - `name:str` - Unique identifier of camera, defaults to `cam{uid:05d}.png`
             for a unique, incrementing id
         - `device='cuda'` - What device to put all tensors to, default is CUDA
@@ -68,6 +72,9 @@ class Camera(object):
 
         self.fovx = fovx
         self.fovy = fovy
+
+        self.cx_frac = cx_frac
+        self.cy_frac = cy_frac
 
         # Extrinsics
         self.R = R
@@ -112,6 +119,18 @@ class Camera(object):
 
 
     @property
+    def cx(self) -> float:
+        """Principle point in X direction"""
+        return self.cx_frac * self.W
+
+
+    @property
+    def cy(self) -> float:
+        """Principle point in Y direction"""
+        return self.cy_frac * self.H
+
+
+    @property
     def fx(self) -> float:
         """Focal in X direction"""
         return fov2focal(self.fovx, self.W)
@@ -143,9 +162,14 @@ class Camera(object):
 
     def __str__(self):
         return (
-            "Camera\n"
-            f"\tname='{self.name}'\n"
-            f"\tH,W='{self.H,self.W}'\n"
-            f"\tviewmat=\n{self.viewmat}\n"
-            f"\tprojmat=\n{self.projmat}\n"
+            "Camera instance\n"
+            f"\tname: '{self.name}'\n"
+            f"\tDevice: {self.device}\n"
+            f"\tH,W: {self.H,self.W}\n"
+            f"\tcx,cy: {self.cx:.2f}, {self.cy:.2f}\n"
+            f"\tfx,fy: {self.fx:.2f}, {self.fy:2f}\n"
+            f"\tFoV X,Y (in degrees): {np.rad2deg(self.fovx):.2f}, {np.rad2deg(self.fovy):.2f}\n"
+            f"\tHas gt image? {self.gt_image is not None}\n"
+            f"\tviewmat:\n{self.viewmat}\n"
+            f"\tprojmat:\n{self.projmat}\n"
         )

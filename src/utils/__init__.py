@@ -29,9 +29,15 @@ def qvec2rotmat_np(qvec:np.ndarray) -> np.ndarray:
 
 
 def focal2fov(focal:float, pixels:int) -> float:
+    """
+    From https://github.com/graphdeco-inria/gaussian-splatting/blob/main/utils/graphics_utils.py
+    """
     return 2*math.atan(pixels/(2*focal))
 
 def fov2focal(fov:float, pixels:int) -> float:
+    """
+    From https://github.com/graphdeco-inria/gaussian-splatting/blob/main/utils/graphics_utils.py
+    """
     return pixels / (2 * math.tan(fov / 2))
 
 

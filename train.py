@@ -68,13 +68,6 @@ def train_report(
             render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
             save_image(render,"renders/latest.png")
 
-            if iter==1 or iter%300 == 0:
-                summarizer.add_image(
-                    "Dev/Render",
-                    render,
-                    iter
-                )
-
     # Save image
     if iter in train_args.save_at:
 
@@ -88,7 +81,7 @@ def train_report(
     if iter in train_args.test_at:
         torch.cuda.empty_cache()
 
-        # Compute average over PSNR and loss
+        # Metrics to run
         metrics = {
             'PSNR':psnr,
             'loss':loss_fn,
@@ -104,16 +97,18 @@ def train_report(
             'SSIM': np.mean,
         }
 
-        print("TESTING", "+"*50)
+        print("TESTING", f"iter={iter}", "+"*50)
 
         if not pipeline_args.random_background and pipeline_args.white_background:
             bg = torch.ones(3).float().to(device)
         else:
             bg = torch.zeros(3).float().to(device)
 
+        test_dir = os.path.join(pipeline_args.log_dir, f"iter_{iter}", "renders")
+        os.makedirs(test_dir, exist_ok=True)
+
         # Get testing cameras
-        dataset.test()
-        for cam in dataset:
+        for cam in dataset.iter("test"):
 
             pkg = model.render(cam, bg=bg)
 
@@ -130,12 +125,14 @@ def train_report(
                 # Add metric
                 stats_lsts[metric].append( stat )
 
-            # Save rendered images in summarizer
+            # Save rendered images
             if summarizer is not None:
                 summarizer.add_images(f"test/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)), iter )
 
-            # TODO: save images during testing
-            # save_image(torch.hstack((pkg.rendering, cam.gt_image)),cam.name)
+            save_image(
+                pkg.rendering,
+                os.path.join(test_dir, cam.name)
+            )
 
         # Reduce results
         stats = {}
@@ -147,7 +144,6 @@ def train_report(
             if summarizer is not None:
                 summarizer.add_scalar(f"test/{metric}", stats[metric], iter)
 
-        dataset.train()
 
 def train_loop(
     model:Gaussians,
@@ -163,7 +159,7 @@ def train_loop(
         ( DSSIMLoss(device=device), train_args.lambda_dssim )
     )
 
-    # Keep a running (smoothed) loss
+    # Keep a running (smoothed) loss for logging
     loss_smooth_mult = 1-1/len(dataset)
     loss_smooth = 0.
 
@@ -184,30 +180,36 @@ def train_loop(
     if USE_TQDM:
         pbar = tqdm(total=train_args.iterations, desc="Training", smoothing=.5)
 
-    cam_optim = torch.optim.Adam(
-        params=[
-            {'name':cam.name, 'params':cam.parameters()}
-            for cam in dataset.cameras if isinstance(cam, OptimizableCamera)
-        ]
-    )
-    def lr_func(step):
-        decay_steps = 2500
-        lr_mult_init = 1e-8
-        lr_mult_final = 1
-        if step <= decay_steps:
-            # starts at 1, goes to 0
-            cosine_decay = 0.5 * (1 + np.cos(np.pi * step / decay_steps))
+    cam_optim = None
+    cam_schedule = None
+    if any(isinstance(cam, OptimizableCamera) for cam in dataset):
+        cam_optim = torch.optim.Adam(
+            params=[
+                {'name':cam.name, 'params':cam.parameters()}
+                for cam in dataset.cameras if isinstance(cam, OptimizableCamera)
+            ]
+        )
+        def lr_func(step):
+            decay_steps = 2500
+            lr_mult_init = 1e-8
+            lr_mult_final = 1
 
-            return cosine_decay * lr_mult_init + (1-cosine_decay)*lr_mult_final
-        else:
-            return 1
-    cam_schedule = torch.optim.lr_scheduler.LambdaLR(cam_optim, lr_lambda=lr_func)
+            if step <= decay_steps:
 
-    dataset_cycle = dataset.cycle()
+                # starts at 1, goes to 0
+                cosine_decay = 0.5 * (1 + np.cos(np.pi * step / decay_steps))
+
+                return cosine_decay * lr_mult_init + (1-cosine_decay)*lr_mult_final
+
+            else:
+                return 1
+        cam_schedule = torch.optim.lr_scheduler.LambdaLR(cam_optim, lr_lambda=lr_func)
+
+    dataset_cycle = dataset.iter("train",cycle=True,shuffle=True)
     for iter in range(1,train_args.iterations+1):
 
         model.optimizer.zero_grad(set_to_none=True)
-        cam_optim.zero_grad()
+        if cam_optim is not None: cam_optim.zero_grad()
 
         # Forward pass
         camera = next(dataset_cycle)
@@ -226,7 +228,7 @@ def train_loop(
 
         # Optimize parameters
         model.optimizer.step()
-        cam_optim.step()
+        if cam_optim is not None: cam_optim.step()
 
         with torch.no_grad():
 
@@ -273,7 +275,7 @@ def train_loop(
                 summarizer=summarizer
             )
 
-        cam_schedule.step()
+        if cam_schedule is not None: cam_schedule.step()
 
     if pbar is not None:
         pbar.close()
@@ -283,19 +285,6 @@ if __name__ == '__main__':
     args,(data_args,model_args,train_args,pipeline_args) = get_args(
         DataParams, ModelParams, TrainParams, PipeLineParams
     )
-
-    # parser = argparse.ArgumentParser("Training Novel Viewpoint Synthesis")
-    # dp = DataParams(parser)
-    # mp = ModelParams(parser)
-    # tp = TrainParams(parser)
-    # pp = PipeLineParams(parser)
-
-    # args = parser.parse_args()
-
-    # data_args = dp.extract(args)
-    # model_args = mp.extract(args)
-    # train_args = tp.extract(args)
-    # pipeline_args = pp.extract(args)
 
     if pipeline_args.no_pbar:
         USE_TQDM = False
@@ -309,7 +298,7 @@ if __name__ == '__main__':
     # 3DU datasets are from intrinsics and extrinsics
     if "3du_data_" in data_args.source_path or "jesse" in data_args.source_path:
         print("Reading dataset from intrinsics/extrinsics...")
-        dataset = DataSet.from_intr_extr(
+        dataset = DataSet.from_3du(
             device=args.device,
             **vars(data_args)
         )

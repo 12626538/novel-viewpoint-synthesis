@@ -316,10 +316,6 @@ class Gaussians(nn.Module):
         # Init `torch.nn.Module` instance
         super().__init__()
 
-        # BUG: SH increases memory usage, even if the model doesnt grow. See what thats about
-        # if sh_degree != 0:
-        #     raise NotImplementedError("Spherical Harmonics are currently not implemented")
-
         self.device = device
 
         # Use pre-defined means
