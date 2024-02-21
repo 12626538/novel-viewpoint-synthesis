@@ -206,7 +206,7 @@ def get_args(*groups:type[ParamGroup], parser=ArgumentParser("Training Novel Vie
     if hasattr(args, 'load_checkpoint'):
         config = configparser.ConfigParser()
         config['parameters'] = {}
-        config.read(os.path.join(args.load_checkpoint,'config.ini'))
+        config.read(os.path.join(args.load_checkpoint,'args.ini'))
 
         for key,val in config['parameters'].items():
             setattr(args, key, val)
@@ -216,6 +216,7 @@ def get_args(*groups:type[ParamGroup], parser=ArgumentParser("Training Novel Vie
     for parser_group in parser_groups:
         args_groups.append( parser_group.extract(args) )
 
+    # Save args in model directory
     if hasattr(args,'model_dir'):
         config = configparser.ConfigParser()
         config['parameters'] = {}
@@ -224,8 +225,8 @@ def get_args(*groups:type[ParamGroup], parser=ArgumentParser("Training Novel Vie
             config['parameters'][key] = str(value)
 
         os.makedirs(args.model_dir,exist_ok=True)
-        with open(os.path.join(args.model_dir,'config.ini'), 'w') as f:
-            print(f.name)
+        with open(os.path.join(args.model_dir,'args.ini'), 'w') as f:
+            print("Saving args at", f.name)
             config.write(f)
 
     # Return `args` and all groups

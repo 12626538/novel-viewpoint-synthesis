@@ -282,6 +282,7 @@ def train_loop(
 
 if __name__ == '__main__':
 
+    # Get args
     args,(data_args,model_args,train_args,pipeline_args) = get_args(
         DataParams, ModelParams, TrainParams, PipeLineParams
     )
@@ -289,6 +290,7 @@ if __name__ == '__main__':
     if pipeline_args.no_pbar:
         USE_TQDM = False
 
+    # Set torch device
     try:
         torch.cuda.set_device(args.device)
     except:
@@ -317,9 +319,19 @@ if __name__ == '__main__':
             **vars(model_args)
         )
 
-    # Initialize 3DU data randomly
-    elif args.source_path[:-1].endswith("3du_data_"):
-        print("Initializing model randomly with {} points in an area of size {:.1f}".format(
+    # Initialize 3DU pointcloud
+    elif "3du_data" in args.source_path:
+        fname = os.path.join(pipeline_args.source_dir, "pointcloud.ply")
+
+        print(f"Loading .ply model from {fname}")
+        model = Gaussians.from_ply(
+            path_to_ply_file=fname,
+            device=args.device,
+            **vars(model_args)
+        )
+    else:
+        raise ValueError("Specify initialization method!")
+        print("Initializing model randomly with {} points in a bounding box of size {:.1f}".format(
             model_args.num_points,
             dataset.scene_extend
         ))
@@ -329,8 +341,7 @@ if __name__ == '__main__':
             **vars(model_args),
         )
 
-    # Initialize from COLMAP `points3D.txt` file
-    else:
+        # Initialize from COLMAP `points3D.txt` file
         fname = os.path.join(args.source_path,'sparse','0','points3D.txt')
         print(f"Initializing model from {fname}")
         model = Gaussians.from_colmap(

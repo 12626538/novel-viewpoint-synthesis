@@ -463,8 +463,8 @@ class Gaussians(nn.Module):
             projmat=camera.projmat @ camera.viewmat,
             fx=camera.fx,
             fy=camera.fy,
-            cx=camera.W / 2,
-            cy=camera.H / 2,
+            cx=camera.cx,
+            cy=camera.cy,
             img_width=camera.W,
             img_height=camera.H,
             tile_bounds=tile_bounds
@@ -652,10 +652,10 @@ class Gaussians(nn.Module):
         # Add the unselected and split/pruned points together
         self.update_optimizer(
             dict_to_cat={
-                'means': torch.cat( (means_clone, means_split), dim=0),
-                'scales': torch.cat( (scales_clone, scales_split), dim=0),
-                'quats': torch.cat( (quats_clone, quats_split), dim=0),
-                'colors': torch.cat( (colors_clone, colors_split), dim=0),
+                'means':     torch.cat( (    means_clone,     means_split), dim=0),
+                'scales':    torch.cat( (   scales_clone,    scales_split), dim=0),
+                'quats':     torch.cat( (    quats_clone,     quats_split), dim=0),
+                'colors':    torch.cat( (   colors_clone,    colors_split), dim=0),
                 'opacities': torch.cat( (opacities_clone, opacities_split), dim=0),
             },
             prune_mask=prune_cond
@@ -721,4 +721,11 @@ class Gaussians(nn.Module):
 
 
     def oneup_sh_degree(self):
-        self.sh_degree_current = min(self.sh_degree_max, self.sh_degree_current+1)
+        """
+        Increment `Gaussians.sh_degree_current`,
+        capped at `Gaussians.sh_degree_max`
+        """
+        self.sh_degree_current = min(
+            self.sh_degree_max,
+            self.sh_degree_current+1
+        )

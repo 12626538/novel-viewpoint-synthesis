@@ -6,7 +6,9 @@ from src.utils import fov2focal,get_projmat,get_viewmat
 
 class Camera(object):
     """
-    # Base class for cameras
+    Base class for cameras
+
+    Comporable to the JaxCam class used for (for example) ZipNeRF.
     """
     uid=0
     def __init__(
@@ -26,8 +28,11 @@ class Camera(object):
         ):
         """
         # Create Camera instance
-        This is the base class used to project Gaussians. Comporable to the
-        JaxCam class used for ZipNeRF.
+        This is the base class used to project Gaussians.
+
+        All arguments are defined in a resolution-agnostic way
+        such that upscaling `gt_image` can be done without having to
+        recompute `fx,fy,cx,cy`.
 
         ## Parameters
 
@@ -38,6 +43,7 @@ class Camera(object):
         - `cx_frac:float`, `cy_frac:float` - Fraction of principle points
             in X and Y direction to the scale, such that `cx = cx_frac * W`
             where `cx` is principle point in X direction and W is image width.
+            Default is `0.5` (principle point is image center).
 
         ### Extrinsics
         Parameters to set up the `4x4` World-To-Camera matrix
@@ -53,7 +59,7 @@ class Camera(object):
             defaults to `0.01, 100`
         - `name:str` - Unique identifier of camera, defaults to `cam{uid:05d}.png`
             for a unique, incrementing id
-        - `device='cuda'` - What device to put all tensors to, default is CUDA
+        - `device='cuda'` - What device to put all tensors to, default is CUDA.
         """
         super().__init__()
 
@@ -173,3 +179,64 @@ class Camera(object):
             f"\tviewmat:\n{self.viewmat}\n"
             f"\tprojmat:\n{self.projmat}\n"
         )
+
+    def project_points(self, points:torch.FloatTensor, res_agnostic:bool=True, visible_only:bool=True) -> torch.FloatTensor:
+        """
+        Project a collection of 3D, world-coordinate points to 2D pixel
+        locations.
+
+        If `res_agnostic` is set to True, returned points will be in the
+        interval `[0,1]x[0,1]` to be resolution agnostic. This scaling is done
+        perserving the aspect ratio by scaling by the max resolution in X or Y
+        direction.
+
+        This method is differientable w.r.t. `points`.
+
+        Returned tensor will be on the same device as input device
+
+        Parameters:
+        - `points:torch.Tensor` - 3D points, shape `N,3`
+        - `res_agnostic:bool` - Rescale pixel coordinates to be in `[0,1]` to be
+            resolution agnostic.
+        - `visible_only:bool` - Only return points inside view frustum
+
+        Returns:
+        - `pixels:torch.FloatTensor` - 2D points, shape `N,2`, dtype `float`.
+        """
+
+        # Export to this device
+        in_device = points.device
+
+        # Convert euclidean to homogeneous
+        hom_points = torch.hstack((
+            points.to(device=self.device),
+            torch.ones(points.shape[0], 1, device=self.device)
+        ))
+
+        # Convert world to camera coordinates
+        cam_points = hom_points @ (self.viewmat).T
+
+        # Project points
+        view_points = cam_points @ (self.projmat).T
+
+        # Scale by hom coeff
+        view_points /= view_points[...,-1, None]
+
+        if visible_only:
+            # Prune points outside view frustum
+            in_view = (
+                ( view_points[..., 0] >= 0 )
+                & (view_points[..., 0] < self.W )
+                & ( view_points[..., 1] >= 0 )
+                & (view_points[..., 1] < self.H )
+                & (view_points[..., 2] >= self.znear )
+                & (view_points[..., 2] < self.zfar )
+            )
+
+            view_points = view_points[in_view]
+
+        # Scale by max resolution to be resolution agnostic
+        if res_agnostic:
+            view_points /= max(self.H,self.W)
+
+        return view_points.to(device=in_device)
