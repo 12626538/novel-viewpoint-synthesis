@@ -1,76 +1,112 @@
+from dataclasses import dataclass
 import torch
 from torch import nn
+import abc
+from collections import namedtuple
 
-from .camera import Camera
-from src.utils import qvec2rotmat
+@dataclass
+class Camera:
+    """
+    Simple dataclass to hold properties used to project Gaussians
+    """
+    # Intrinsics
+    fx:float
+    fy:float
+    cx:float
+    cy:float
+    projmat:torch.Tensor
 
-class OptimizableCamera(Camera, nn.Module):
-    use_residual = True
-    use_precondition = True
+    # Extrinsics
+    viewmat:torch.Tensor
 
-    def __init__(self, *args, **kwargs):
-        super(Camera, self).__init__()
-        super().__init__(*args, **kwargs)
-
-        # Parameters:
-        self._residuals = {
-            "quat": nn.Parameter(torch.tensor([1,0,0,0], dtype=torch.float32, device=self.device), requires_grad=True),
-            "trans": nn.Parameter(torch.zeros(3, dtype=torch.float32, device=self.device), requires_grad=True),
-            "fx": nn.Parameter(torch.zeros(1, dtype=torch.float32, device=self.device), requires_grad=True),
-            "fy": nn.Parameter(torch.zeros(1, dtype=torch.float32, device=self.device), requires_grad=True),
-        }
-
-    @property
-    def residuals(self) -> dict[str, nn.Parameter]:
-        residuals = self._residuals
-
-        if self.use_residual:
-            sections = [param.shape[0] for param in residuals.values()]
-
-            vec = torch.concat(residuals.values())
-
-            # TODO add precondition matrix here here
-            vec_prec = vec @ torch.eye(vec.shape[0], device=self.device)
-
-            residuals = torch.split(vec_prec, sections)
-
-        return residuals
-
-    @property
-    def viewmat(self) -> torch.Tensor:
-        viewmat = super().viewmat
-
-        residual = torch.vstack((
-            torch.hstack((qvec2rotmat(self.residual_quat),self.residual_trans.unsqueeze(1))),
-            torch.tensor([[0,0,0,1]], device=self.device)
-        ))
-
-        return residual @ viewmat
-
-    @property
-    def fx(self):
-        fx = super().fx
-        return fx + self.residual_fx
-
-    @property
-    def fy(self):
-        fy = super().fy
-        return fy + self.residual_fy
+    # Misc
+    H:int
+    W:int
+    znear:float=0.01
+    zfar:float=100.0
 
 
-    def get_precondition_matrix(self) -> torch.Tensor:
-        # Sample some random points
-        N=1000
-        pts = torch.randn(N,3, device=self.device)
+    def project_points(
+        self,
+        points:torch.Tensor,
+        res_agnostic:bool=True,
+        remove_invisible:bool=True
+    ) -> torch.Tensor:
+        """
+        Project a tensor of points to the image plane
 
-        # Get jacobian of projecting these points
-        jac = torch.autograd.functional.jacobian(self.project_points, pts, create_graph=False)
+        TODO: finish this
 
-        # Sigma = J^T @ J
-        jtj = jac.T @ jac
+        Parameters:
+        - `points:torch.Tensor` of shape `N,3`
 
-        # P = Sigma^{-1/2}
-        eigval, eigvec = torch.linalg.eigh(jtj)
-        prec = eigvec * torch.sqrt(eigval) @ torch.linalg.inv(eigvec)
+        Returns:
+        - `pixels:torch.Tensor` of shape `M,3` of XYZ pixel coordinates
+        """
+        # 3D XYZ to 4D homogeneous
+        points_hom = torch.hstack((points, torch.ones(points.shape[0], device=points.device)))
 
-        return prec
+        # Project to pixel coordinates
+        pixels_hom = points_hom @ self.viewmat.T @ self.projmat.T
+
+        # Back to 3D XYZ
+        pixels = pixels_hom[:,:3] / pixels_hom[:,3]
+
+        # Remove points outside view frustum
+        if remove_invisible:
+            mask = (
+                  ( pixels[:,0]  < 0 )
+                & ( pixels[:,0] >= self.W )
+                & ( pixels[:,1]  < 0 )
+                & ( pixels[:,1] >= self.H )
+                & ( pixels[:,2]  < self.znear )
+                & ( pixels[:,2] >= self.zfar )
+            )
+
+            pixels = pixels[mask]
+
+        # Rescale to be resolution agnostic
+        if res_agnostic:
+            pixels = pixels / max(self.H, self.W)
+
+        return pixels
+
+
+CameraParameterization = namedtuple(
+    "CameraParameterization",
+    ['camera','flat_residuals','unflatten_fn','aux']
+)
+class CameraResidual(abc.ABC):
+    """
+    Abstract class for camera residual transformations
+    """
+
+    def create_residuals(self, camera:Camera) -> CameraParameterization:
+        """
+        Initialize residuals from Camera instance
+        """
+        raise NotImplementedError()
+
+    def transform(self, camera:Camera, residuals:dict[str,torch.Tensor]) -> Camera:
+        """
+        Get transformed Camera instance from base Camera and unflattened residuals
+        """
+        raise NotImplementedError()
+
+    def get_precondition_matrix(self, parameterization:CameraParameterization) -> torch.Tensor:
+
+        def fwd(flat_residuals):
+            residuals = parameterization.unflatten_fn(flat_residuals)
+
+            camera = self.transform(parameterization.camera, residuals)
+
+            points = torch.rand((1000,3))*2 - 1
+
+            pixels = camera.project_points(points)
+
+            return torch.linalg.norm(pixels, axis=1)
+
+        jac = torch.autograd.functional.jacobian(fwd,parameterization.flat_residuals)
+        sigma = jac.T @ jac
+        print(sigma.shape)
+        # TODO convert to sqrt_inv
