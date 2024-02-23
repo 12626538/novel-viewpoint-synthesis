@@ -3,7 +3,7 @@ import random
 import json
 
 from src.utils.colmap_utils import *
-from src.camera import Camera,OptimizableCamera
+from src.camera import Camera
 from src.utils import qvec2rotmat_np,image_path_to_tensor,focal2fov
 
 class DataSet:

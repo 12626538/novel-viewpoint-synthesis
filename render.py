@@ -30,6 +30,11 @@ if __name__ == '__main__':
         help='when generating videos, use this framerate'
     )
     parser.add_argument(
+        '--alpha-blend', action='store_true',
+        default=False,
+        help='Render reconstruction as alpha-blended instead of side-by-side'
+    )
+    parser.add_argument(
         '--glob-scale', type=float,
         default=1,
         help="Global scaling factor for the gaussians, used for rendering"
@@ -99,16 +104,17 @@ if __name__ == '__main__':
             render = pkg.rendering.permute(1,2,0)
             B = (render.detach().cpu().numpy()*255).astype(np.uint8)[:H,:W]
 
-            # SIDE-BY-SIDE
-            out = np.zeros((H,2*W,3),dtype=np.uint8)
-            out[:H, :W] = A
-            out[:H, -W:] = B
+            if args.alpha_blend:
+                # ALPHA BLENDING
+                alpha = pkg.alpha.detach().cpu().numpy()[:H,:W,None]
+                out = np.zeros((H,W,3),dtype=np.uint8)
+                out[:H, :W] = alpha* B + (1-alpha)* A
+            else:
+                # SIDE-BY-SIDE
+                out = np.zeros((H,2*W,3),dtype=np.uint8)
+                out[:H, :W] = A
+                out[:H, -W:] = B
 
-
-            # ALPHA BLENDING
-            alpha = pkg.alpha.detach().cpu().numpy()[:H,:W,None]
-            out = np.zeros((H,W,3),dtype=np.uint8)
-            out[:H, :W] = alpha* B + (1-alpha)* A
             return out
 
         clip = VideoClip(make_frame, duration=T)
@@ -123,7 +129,7 @@ if __name__ == '__main__':
     else:
         dataset = get_rotating_dataset(
             distance_from_center=0,#5,
-            center_point=np.array([0,1,0]),
+            center_point=np.array([-.7,1.2,0]),
             num_cameras=240
         )
 
@@ -150,4 +156,9 @@ if __name__ == '__main__':
             return out
 
         clip = VideoClip(make_frame, duration=T)
-        clip.write_videofile(os.path.join(out_dir, "render.mp4"),fps=args.fps)
+        clip.write_videofile(
+            os.path.join(out_dir, "render.mp4"),
+            fps=args.fps,
+            threads=5,
+            logger=None,
+        )

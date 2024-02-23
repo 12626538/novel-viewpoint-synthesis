@@ -62,7 +62,7 @@ def convert_3du(
 
         if frame is None: break;
         # if i % 10 != 0: continue;
-        if i >= 300:
+        if i >= 700:
             break
 
         # Read data
@@ -76,28 +76,28 @@ def convert_3du(
         extrinsics = np.squeeze(np.array(info['localToWorld'])).T
         extrinsics_inv = np.linalg.inv(extrinsics)
 
-        # Save frame
-        img = frame.img().astype(np.uint8)
-        fname = f'{frame_id:06d}.png'
-        cv2.imwrite(os.path.join(output_images, fname), img)
-
         # Set camera
         H,W = img.shape[:2]
-
         # TODO this is to fix the fovx and fovy values, why?
         # Seems to suggest video was downsampled from 1920x1440?
         H*=2
         W*=2
 
-        f_cameras.write(json.dumps({
-            "image": fname,
-            "fovx": focal2fov(intrinsics[0,0], W),
-            "fovy": focal2fov(intrinsics[1,1], H),
-            "cx_frac": intrinsics[0,2] / W,
-            "cy_frac": intrinsics[1,2] / H,
-            "R": extrinsics_inv[:3,:3].tolist(),
-            "t": extrinsics_inv[:3,3].tolist(),
-        })+"\n")
+        if i < 300:
+            fname = f'{frame_id:06d}.png'
+            f_cameras.write(json.dumps({
+                "image": fname,
+                "fovx": focal2fov(intrinsics[0,0], W),
+                "fovy": focal2fov(intrinsics[1,1], H),
+                "cx_frac": intrinsics[0,2] / W,
+                "cy_frac": intrinsics[1,2] / H,
+                "R": extrinsics_inv[:3,:3].tolist(),
+                "t": extrinsics_inv[:3,3].tolist(),
+            })+"\n")
+
+            # Save frame
+            img = frame.img().astype(np.uint8)
+            cv2.imwrite(os.path.join(output_images, fname), img)
 
         # Reszie image to match depth info
         row_ratio = depth.shape[0] / img.shape[0]
@@ -141,8 +141,8 @@ def convert_3du(
 
     # Downsample to 50K points
     N = len(pointcloud.points)
-    if N>50_000:
-        pointcloud = pointcloud.random_down_sample( 50_000 / N )
+    if N>150_000:
+        pointcloud = pointcloud.random_down_sample( 150_000 / N )
 
     o3d.io.write_point_cloud(output_ply, pointcloud,write_ascii=True)
 
@@ -150,5 +150,5 @@ def convert_3du(
 
 if __name__ == '__main__':
     video3d_file = '/home/jip/data1/3du_data_5/begin_good_day_212/upload/2023_11_01__11_14_30/video.v3dc'
-    output_dir = "/home/jip/data1/3du_data_5/gsplat"
+    output_dir = "/home/jip/data1/3du_data_5/"
     convert_3du(video3d_file, output_dir)

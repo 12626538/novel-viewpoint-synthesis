@@ -24,7 +24,7 @@ from src.model.gaussians import Gaussians,RenderPackage
 from src.data import DataSet
 from src.utils.loss_utils import L1Loss,DSSIMLoss,SSIM,CombinedLoss
 from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams,get_args
-from src.camera import OptimizableCamera
+# from src.camera import OptimizableCamera
 
 def train_report(
     iter:int, # !first iter is 1, not 0!
@@ -51,6 +51,7 @@ def train_report(
     if summarizer is not None:
         if iter%10 == 0:
             summarizer.add_scalar("Train/Loss", smoothed_loss, iter)
+
             for group in model.optimizer.param_groups:
                 summarizer.add_scalar(f"LearningRate/{group['name']}", group['lr'], iter)
 
@@ -58,7 +59,10 @@ def train_report(
             if iter <= train_args.densify_until+10:
                 summarizer.add_scalar("Pruning/Num splats split",model._n_split, iter)
                 summarizer.add_scalar("Pruning/Num splats cloned",model._n_clone, iter)
-                summarizer.add_scalar("Pruning/Num splats pruned",model._n_prune, iter)
+                summarizer.add_scalar("Pruning/Num splats pruned (total)",model._n_prune, iter)
+                summarizer.add_scalar("Pruning/Num splats pruned by opacity",model._n_prune_opacity, iter)
+                summarizer.add_scalar("Pruning/Num splats cloned by view radius",model._n_prune_radii, iter)
+                summarizer.add_scalar("Pruning/Num splats pruned by global radius",model._n_prune_scale, iter)
 
             # summarizer.add_histogram("dev/radii", rendering_pkg.radii[rendering_pkg.visibility_mask].detach().cpu().numpy().clip(0,train_args.max_screen_size+1), iter)
 
@@ -81,69 +85,88 @@ def train_report(
     if iter in train_args.test_at:
         torch.cuda.empty_cache()
 
-        # Metrics to run
-        metrics = {
-            'PSNR':psnr,
-            'loss':loss_fn,
-            'SSIM':SSIM(device=device)
-            # TODO: add LPIPS
-        }
-        stats_lsts = {
-            metric:[] for metric in metrics
-        }
-        reduction = {
-            'PSNR': np.mean,
-            'loss': np.mean,
-            'SSIM': np.mean,
-        }
-
-        print("TESTING", f"iter={iter}", "+"*50)
+        print("EVALUATING", f"iter={iter}", "+"*50)
 
         if not pipeline_args.random_background and pipeline_args.white_background:
             bg = torch.ones(3).float().to(device)
         else:
             bg = torch.zeros(3).float().to(device)
 
-        test_dir = os.path.join(pipeline_args.log_dir, f"iter_{iter}", "renders")
-        os.makedirs(test_dir, exist_ok=True)
+        def eval_set(partition:str, eval_every:int=1):
+            """
+            Run evaluations on partition
+            either "train" or "test"
 
-        # Get testing cameras
-        for cam in dataset.iter("test"):
+            Use `eval_every` to test a subset of the data
+            (ie `eval_every=2` will test every second sample)
+            default is every 1 (ie all).
+            """
+            print("Set:",partition.upper())
 
-            pkg = model.render(cam, bg=bg)
+            # Metrics to run
+            metrics = {
+                'PSNR':psnr,
+                'loss':loss_fn,
+                'SSIM':SSIM(device=device)
+                # TODO: add LPIPS
+            }
+            stats_lsts = {
+                metric:[] for metric in metrics
+            }
+            reduction = {
+                'PSNR': np.mean,
+                'loss': np.mean,
+                'SSIM': np.mean,
+            }
 
-            # Get result for each metric to test on
-            for metric,metric_func in metrics.items():
+            out_dir = os.path.join(pipeline_args.log_dir, f"iter_{iter}", "renders", partition)
+            os.makedirs(out_dir, exist_ok=True)
 
-                # Compute metric
-                stat = metric_func(pkg.rendering, cam.gt_image)
+            # Get testing cameras
+            for i,cam in enumerate(dataset.iter(partition)):
 
-                # convert Tensor with a single number to a float
-                if isinstance(stat, torch.Tensor) and stat.squeeze().ndim == 0:
-                    stat = stat.item()
+                # Only evaluate every so often
+                if i%eval_every != 0:
+                    continue
 
-                # Add metric
-                stats_lsts[metric].append( stat )
+                pkg = model.render(cam, bg=bg)
 
-            # Save rendered images
-            if summarizer is not None:
-                summarizer.add_images(f"test/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)), iter )
+                # Get result for each metric to test on
+                for metric,metric_func in metrics.items():
 
-            save_image(
-                pkg.rendering,
-                os.path.join(test_dir, cam.name)
-            )
+                    # Compute metric
+                    stat = metric_func(pkg.rendering, cam.gt_image)
 
-        # Reduce results
-        stats = {}
-        for metric,values in stats_lsts.items():
-            # Compute the final value
-            stats[metric] = reduction[metric](values)
+                    # convert Tensor with a single number to a float
+                    if isinstance(stat, torch.Tensor) and stat.squeeze().ndim == 0:
+                        stat = stat.item()
 
-            print(metric, stats[metric])
-            if summarizer is not None:
-                summarizer.add_scalar(f"test/{metric}", stats[metric], iter)
+                    # Add metric
+                    stats_lsts[metric].append( stat )
 
+                # Save rendered images
+                if summarizer is not None:
+                    summarizer.add_images(f"{partition}_renders/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)), iter )
+
+                # On last iter, also save to disk
+                if iter == train_args.iterations:
+                    save_image(
+                        pkg.rendering,
+                        os.path.join(out_dir, cam.name)
+                    )
+
+            # Reduce results
+            stats = {}
+            for metric,values in stats_lsts.items():
+                # Compute the final value
+                stats[metric] = reduction[metric](values)
+
+                print(metric, stats[metric])
+                if summarizer is not None:
+                    summarizer.add_scalar(f"{partition}_metric/{metric}", stats[metric], iter)
+
+        eval_set("train", eval_every=10)
+        eval_set("test")
 
 def train_loop(
     model:Gaussians,
@@ -153,6 +176,9 @@ def train_loop(
     pipeline_args:PipeLineParams
 ):
 
+    # initialize lr schedule
+    model.init_lr_schedule()
+
     # Set up loss
     loss_fn = CombinedLoss(
         ( L1Loss(), 1.-train_args.lambda_dssim ),
@@ -160,7 +186,7 @@ def train_loop(
     )
 
     # Keep a running (smoothed) loss for logging
-    loss_smooth_mult = 1-1/len(dataset)
+    loss_smooth_mult = .9
     loss_smooth = 0.
 
     # Use Tensorboard
@@ -180,36 +206,10 @@ def train_loop(
     if USE_TQDM:
         pbar = tqdm(total=train_args.iterations, desc="Training", smoothing=.5)
 
-    cam_optim = None
-    cam_schedule = None
-    if any(isinstance(cam, OptimizableCamera) for cam in dataset):
-        cam_optim = torch.optim.Adam(
-            params=[
-                {'name':cam.name, 'params':cam.parameters()}
-                for cam in dataset.cameras if isinstance(cam, OptimizableCamera)
-            ]
-        )
-        def lr_func(step):
-            decay_steps = 2500
-            lr_mult_init = 1e-8
-            lr_mult_final = 1
-
-            if step <= decay_steps:
-
-                # starts at 1, goes to 0
-                cosine_decay = 0.5 * (1 + np.cos(np.pi * step / decay_steps))
-
-                return cosine_decay * lr_mult_init + (1-cosine_decay)*lr_mult_final
-
-            else:
-                return 1
-        cam_schedule = torch.optim.lr_scheduler.LambdaLR(cam_optim, lr_lambda=lr_func)
-
     dataset_cycle = dataset.iter("train",cycle=True,shuffle=True)
     for iter in range(1,train_args.iterations+1):
 
-        model.optimizer.zero_grad(set_to_none=True)
-        if cam_optim is not None: cam_optim.zero_grad()
+        model.optimizer.zero_grad()
 
         # Forward pass
         camera = next(dataset_cycle)
@@ -228,7 +228,6 @@ def train_loop(
 
         # Optimize parameters
         model.optimizer.step()
-        if cam_optim is not None: cam_optim.step()
 
         with torch.no_grad():
 
@@ -275,7 +274,8 @@ def train_loop(
                 summarizer=summarizer
             )
 
-        if cam_schedule is not None: cam_schedule.step()
+        if model.lr_schedule is not None:
+            model.lr_schedule.step()
 
     if pbar is not None:
         pbar.close()
@@ -297,9 +297,9 @@ if __name__ == '__main__':
         print(f"!Warning! Could not use device {args.device}, falling back to cuda:0.")
         args.device = 'cuda:0'
 
-    # 3DU datasets are from intrinsics and extrinsics
-    if "3du_data_" in data_args.source_path or "jesse" in data_args.source_path:
-        print("Reading dataset from intrinsics/extrinsics...")
+    # 3DU datasets from src/preprocessing/convert_3du.py
+    if "3du_data_" in data_args.source_path:
+        print("Reading from 3DU dataset...")
         dataset = DataSet.from_3du(
             device=args.device,
             **vars(data_args)
@@ -320,8 +320,8 @@ if __name__ == '__main__':
         )
 
     # Initialize 3DU pointcloud
-    elif "3du_data" in args.source_path:
-        fname = os.path.join(pipeline_args.source_dir, "pointcloud.ply")
+    elif "3du_data" in data_args.source_path:
+        fname = os.path.join(data_args.source_path, "pointcloud.ply")
 
         print(f"Loading .ply model from {fname}")
         model = Gaussians.from_ply(
@@ -331,6 +331,7 @@ if __name__ == '__main__':
         )
     else:
         raise ValueError("Specify initialization method!")
+        # Random initialization
         print("Initializing model randomly with {} points in a bounding box of size {:.1f}".format(
             model_args.num_points,
             dataset.scene_extend

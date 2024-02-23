@@ -30,5 +30,4 @@ def get_rotating_dataset(
 
     return DataSet(
         cameras=cameras,
-        device=device,
     )

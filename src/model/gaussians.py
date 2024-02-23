@@ -10,13 +10,13 @@ import torch.nn.functional as F
 from plyfile import PlyElement, PlyData
 
 from src.camera import Camera
-from src.utils import colmap_utils,qvec2rotmat,sigmoid_inv
+from src.utils import colmap_utils, qvec2rotmat, sigmoid_inv, lr_utils
 
 # An instance of this is returned by the `Gaussians.render` method
 RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask","alpha"])
 
 class Gaussians(nn.Module):
-    BLOCK_X, BLOCK_Y = 16, 16
+    BLOCK_WIDTH = 16
 
 
     @classmethod
@@ -220,7 +220,7 @@ class Gaussians(nn.Module):
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
         # Fields to use
-        fields = [f'pos_{p+1}' for p in range(self.means.shape[1])] \
+        fields = ['x','y','z'] \
             + [f'scale_{s+1}' for s in range(self.scales.shape[1])] \
             + [f'rot_{c+1}' for c in range(self.quats.shape[1])] \
             + [f'color_{d+1}_{c+1}' for d in range(self.colors.shape[1]) for c in range(self.colors.shape[2])] \
@@ -368,7 +368,7 @@ class Gaussians(nn.Module):
         # Initialize opacities
         if opacities is None:
             # such that sigmoid(opacity) = 0.1
-            opacities = torch.ones((num_points, 1), device=self.device) * sigmoid_inv(.1)
+            opacities = torch.ones((num_points, 1), device=self.device) * sigmoid_inv(.5)
 
         # Sanity check: make sure all parameters have same number of points
         if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities)):
@@ -394,6 +394,9 @@ class Gaussians(nn.Module):
             lr=0.0,
         )
 
+        # Can be optionally set by `init_scheduler`
+        self.lr_schedule = None
+
         # Set activation functions
         self.act_scales = act_scales
         self.act_quats = act_quats
@@ -407,6 +410,31 @@ class Gaussians(nn.Module):
         self._n_split = 0
         self._n_clone = 0
         self._n_prune = 0
+        self._n_prune_opacity = 0
+        self._n_prune_radii = 0
+        self._n_prune_scale = 0
+
+
+    def init_lr_schedule(self, warmup_until=100, decay_for=20_000):
+        # Default learning rate schedule: 100 warmup iters, decay from there
+        warmup = lr_utils.cosine_warmup(warmup_until)
+        decay = lr_utils.log_linear(decay_for - warmup_until)
+
+        # Set scheduler for each group
+        lambdas = []
+        for group in self.optimizer.param_groups:
+            if group["name"] == "means":
+                lmbda = lambda epoch: warmup(epoch) if epoch <= warmup_until else decay(epoch - warmup_until)
+            else:
+                lmbda = warmup
+            lambdas.append(lmbda)
+
+        # Create actualy lr scheduler
+        self.lr_schedule = optim.lr_scheduler.LambdaLR(
+            optimizer=self.optimizer,
+            lr_lambda=lambdas,
+        )
+
 
 
     @property
@@ -441,14 +469,6 @@ class Gaussians(nn.Module):
         - `visibility_mask:torch.Tensor` - Mask of visible splats, shape `N`
         - `alpha:torch.Tensor` - Alpha value of each pixel, shape `H,W`
         """
-
-        # Set up number of tiles in X,Y,Z direction
-        tile_bounds = (
-            (camera.W + self.BLOCK_X - 1) // self.BLOCK_X,
-            (camera.H + self.BLOCK_Y - 1) // self.BLOCK_Y,
-            1,
-        )
-
         # If unspecified generate random background
         if bg is None:
             bg = torch.rand(3, device=self.device)
@@ -467,7 +487,8 @@ class Gaussians(nn.Module):
             cy=camera.cy,
             img_width=camera.W,
             img_height=camera.H,
-            tile_bounds=tile_bounds
+            block_width=self.BLOCK_WIDTH,
+            clip_thresh=camera.znear,
         )
 
         # Attempt to keep position gradients to update densification stats
@@ -478,7 +499,7 @@ class Gaussians(nn.Module):
 
         if self.sh_degree_max > 0:
             viewdirs = self.means.detach() - torch.from_numpy(camera.loc).float().to(self.device).unsqueeze(0)
-            viewdirs /= torch.linalg.norm(viewdirs,dim=1,keepdim=True)
+            viewdirs = viewdirs / torch.linalg.norm(viewdirs,dim=1,keepdim=True)
 
             # Convert SH features to features
             # TODO: these features should still be properly converted to colors?
@@ -502,6 +523,7 @@ class Gaussians(nn.Module):
             opacity=self.act_opacities( self.opacities ) * compensation[...,None],
             img_height=camera.H,
             img_width=camera.W,
+            block_width=self.BLOCK_WIDTH,
             background=bg,
             return_alpha=True,
         )
@@ -637,16 +659,26 @@ class Gaussians(nn.Module):
         # Get mean as sum of noise and original mean
         means_split = self.means[split_cond].repeat( N, 1 ) + torch.bmm(rotmats, noise.unsqueeze(-1)).squeeze(-1)
 
-        # Finally, remove all split splats, and with an opacity too low
-        prune_cond = split_cond \
-            | (self.act_opacities( self.opacities ) <= min_opacity).squeeze()
+        # Prune any point with an opacity too low
+        prune_cond = (self.act_opacities( self.opacities ) <= min_opacity).squeeze()
+        self._n_prune_opacity = prune_cond.sum()
 
         # If set, discard any splat that was rendered with a view radius larger than a max radius
         if max_screen_size is not None:
-            prune_cond = prune_cond \
-                | (self._max_radii > max_screen_size) \
-                | ( torch.max(self.act_scales(self.scales), dim=1).values > max_world_size ).squeeze()
 
+            # Prune any point with a screen radius larger than this
+            prune_radii_cond = (self._max_radii > max_screen_size)
+            self._n_prune_radii = prune_radii_cond.sum()
+
+            # Prune any point with a scale larger than a world max
+            prune_scale_cond = ( torch.max(self.act_scales(self.scales), dim=1).values > max_world_size ).squeeze()
+            self._n_prune_scale = prune_scale_cond.sum()
+
+            # Combine conditions
+            prune_cond = prune_cond | prune_radii_cond | prune_scale_cond
+
+        # Total number of points pruned
+        prune_cond = prune_cond | split_cond
         self._n_prune = prune_cond.sum()
 
         # Add the unselected and split/pruned points together
@@ -717,7 +749,7 @@ class Gaussians(nn.Module):
         Clip all opacities to a fixed maximum
         """
         # clamp_max_ is inplace
-        self.opacities.clamp_max_(sigmoid_inv(value))
+        self.opacities.clamp_(max=sigmoid_inv(value))
 
 
     def oneup_sh_degree(self):

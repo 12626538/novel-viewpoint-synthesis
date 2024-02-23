@@ -107,6 +107,8 @@ def get_projmat(znear:float, zfar:float, fovx:float, fovy:float) -> np.ndarray:
 
     a = 1 / math.tan( fovx / 2 )
     b = 1 / math.tan( fovy / 2 )
+    # a = 2 * fx / W
+    # b = 2 * fy / H
 
     zsign = 1.0
     return np.array([

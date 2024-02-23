@@ -5,30 +5,33 @@ from typing import Callable,Any
 
 def get_projmat(
         fx:float,fy:float,
-        cx:float,cy:float,
         H:int,W:int,
         n:float,f:float
     ) -> torch.Tensor:
     """
-    From https://stackoverflow.com/a/75355212
+    From http://www.songho.ca/opengl/gl_projectionmatrix.html
+
+    Assumes r=-l, t=-b (principle point is in the center of the view frustum)
+
+    This because `gsplat.project_gaussians` already accounts for non-centered
+    principle point.
 
     Diffirientable w.r.t all input arguments
     """
 
     projmat = torch.zeros(4,4,device=fx.device)
 
+    sign = -1
     projmat[0,0] = 2 * fx / W
-    projmat[0,2] = -(W - 2*cx)/W
     projmat[1,1] = 2 * fy / H
-    projmat[1,2] = -(2*cy - H)/H
-    projmat[2,2] = (n + f)/(n - f)
-    projmat[2,3] = 2 * n * f / (n - f)
-    projmat[3,2] = 1
+    projmat[2,2] = (f+n) / (n-f) * sign
+    projmat[2,3] = 2*n*f / (n-f)
+    projmat[3,2] = -sign
 
     return projmat
 
 
-def inv_sqrtm(mat:torch.Tensor, eps=torch.finfo(torch.float32).eps) -> torch.Tensor:
+def inv_sqrtm(mat:torch.Tensor, eps=torch.finfo(torch.float32).tiny) -> torch.Tensor:
     """
     From https://github.com/jonbarron/camp_zipnerf/blob/16206bd88f37d5c727976557abfbd9b4fa28bbe1/internal/spin_math.py#L89
     """
@@ -36,12 +39,14 @@ def inv_sqrtm(mat:torch.Tensor, eps=torch.finfo(torch.float32).eps) -> torch.Ten
     # Computing diagonalization
     eigvals, eigvecs = torch.linalg.eigh(mat)
 
+    # eigvals += 1e-10
+
     # Inv Sqrt of eigenvalues, but prevent NaNs on unstable values
-    scaling = (1 / torch.sqrt(eigvals)).view(1,-1)
-    scaling = torch.where(eigvals > eps, scaling, 0)
+    eigvals = torch.where(eigvals > eps, eigvals, torch.finfo(torch.float32).eps)
+    scaling = (1. / torch.sqrt(eigvals)).view(1,-1)
 
     # Reconstruct matrix
-    return (eigvecs * scaling) @ eigvecs.T
+    return (eigvecs * scaling) @ eigvecs.moveaxis(-2, -1)
 
 @dataclass
 class Camera:
@@ -75,8 +80,8 @@ class Camera:
     def project_points(
         self,
         points:torch.Tensor,
-        res_agnostic:bool=True,
-        remove_invisible:bool=False,
+        res_agnostic:bool=False,
+        remove_invisible:bool=True,
     ) -> torch.Tensor:
         """
         Project a tensor of points to the image plane
@@ -119,23 +124,39 @@ class Camera:
 
         return pixels[:,:2]
 
+
 def flatten(residuals:dict[str,torch.Tensor]):
+    """
+    Flatten a dictionary of tensors into a single tensor
+
+    Also provides unflatten function, st
+    >>> latent,unflatten_fn = flatten(residuals)
+    >>> residuals == unflatten_fn(latent)
+    holds
+    """
+    # Get names and sizes of the parameters
     names = list(residuals.keys())
     sections = [residuals[name].shape[0] for name in names]
 
-    def unflatten_fn(flat_residuals:torch.Tensor) -> dict[str, torch.Tensor]:
-        params = flat_residuals.split(sections)
+    # Use names and sizes to set up unflatten function
+    def unflatten_fn(latent:torch.Tensor) -> dict[str, torch.Tensor]:
+        """Unflatten latent vector into residuals dictionary"""
+        # Split based on sizes
+        params = latent.split(sections)
 
+        # Use names to set up residuals dictionary
         return { name:param for name,param in  zip(names, params) }
 
-    flat_residuals = torch.concat([residuals[name] for name in names])
+    # Actually flatten all the tensors
+    latent = torch.concat([residuals[name] for name in names])
 
-    return flat_residuals, unflatten_fn
+    return latent, unflatten_fn
+
 
 @dataclass
 class CameraParameterization:
     camera:Camera
-    flat_residuals:nn.Parameter
+    latent:nn.Parameter
     unflatten_fn:Callable[[nn.Parameter], dict[str, torch.Tensor]]
     aux:Any=None
     prec_mat:torch.Tensor=None
@@ -156,7 +177,7 @@ class CameraResidual():
 
 
     @staticmethod
-    def transform(camera:Camera, residuals:dict[str,torch.Tensor]) -> Camera:
+    def transform(camera:Camera, residuals:dict[str,torch.Tensor], aux:Any) -> Camera:
         """
         Get transformed Camera instance from base Camera and unflattened residuals
         """
@@ -166,9 +187,9 @@ class CameraResidual():
     @classmethod
     def parameterize(cls, camera:Camera) -> CameraParameterization:
         residuals, aux = cls.create_residuals(camera)
-        flat_residuals, unflatten_fn = flatten(residuals)
+        latent, unflatten_fn = flatten(residuals)
 
-        param = CameraParameterization(camera, flat_residuals, unflatten_fn,aux)
+        param = CameraParameterization(camera, latent, unflatten_fn,aux)
 
         if cls.use_precondition:
             param.prec_mat = cls.get_precondition_matrix(param)
@@ -178,47 +199,61 @@ class CameraResidual():
 
     @classmethod
     def get_camera(cls, param:CameraParameterization) -> Camera:
+        """
+        Given parameterization, get transformed Camera instance
+
+        Can be thought of as the inverse of `parameterize`
+        """
         residuals = cls.get_residuals(param)
-        return cls.transform(param.camera, residuals)
+        return cls.transform(param.camera, residuals, param.aux)
 
     @classmethod
     def get_residuals(cls, param:CameraParameterization) -> dict[str,torch.Tensor]:
         """
         Get residuals as a dict from parameterization instance
+
+        Also applies any processing of latent-to-residuals
         """
 
-        flat_residuals = param.flat_residuals
+        latent = param.latent
 
         if cls.use_precondition:
-            flat_residuals = flat_residuals @ param.prec_mat
+            latent = latent @ param.prec_mat
 
-        return param.unflatten_fn(flat_residuals)
+        return param.unflatten_fn(latent)
 
 
     @classmethod
-    def get_precondition_matrix(cls, parameterization:CameraParameterization) -> torch.Tensor:
+    def get_precondition_matrix(cls, param:CameraParameterization) -> torch.Tensor:
+        """
+        Get precondition matrix from parameterization
+        """
 
         # Wrap the Camera.project_points in a function to accept a tensor as arg
-        def fwd(flat_residuals):
+        def fwd(latent):
             """
             Given a flattened residual vector, compute pixel locations
             of randomly generated points.
             """
 
             # Convert residuals to Camera instance
-            residuals = parameterization.unflatten_fn(flat_residuals)
-            camera = cls.transform(parameterization.camera, residuals)
+            residuals = param.unflatten_fn(latent)
+            camera = cls.transform(param.camera, residuals, param.aux)
 
             # Generate random points in [0,100]^3
-            points = torch.rand((1000,3), device=flat_residuals.device)
+            points = torch.rand((1000,3), device=latent.device)*2.-1.
 
             # Project points to pixel coordinates
             pixels = camera.project_points(points)
 
-            return pixels.flatten()
+            # print("Number of visible points:", pixels.shape[0])
 
-        # Get jacobian, shape `2M,K`
-        jac = torch.autograd.functional.jacobian(fwd, parameterization.flat_residuals, create_graph=False)
+            return pixels
+
+        # Get jacobian, shape `M,2,K`
+        jac = torch.autograd.functional.jacobian(fwd, param.latent, create_graph=False)
+
+        jac = jac.mean(axis=1)
 
         # Convert to covariance, shape `K,K`
         sigma = jac.T @ jac
@@ -231,33 +266,31 @@ class CameraIntrinsics(CameraResidual):
     def create_residuals(camera:Camera) -> tuple[dict[str,torch.Tensor], Any]:
         device = camera.viewmat.device
         residuals = {
-            "fx": torch.zeros(1, device=device),
-            "fy": torch.zeros(1, device=device),
+            "f": torch.zeros(1, device=device),
             "cx": torch.zeros(1, device=device),
-            "cy": torch.zeros(1, device=device)
+            "cy": torch.zeros(1, device=device),
         }
 
         aux = None
 
         return residuals, aux
 
-    def transform(camera: Camera, residuals: dict[str, torch.Tensor]) -> Camera:
+    def transform(camera: Camera, residuals: dict[str, torch.Tensor], aux:Any) -> Camera:
 
-        fx = camera.fx + residuals['fx']
-        fy = camera.fy + residuals['fy']
+        fx = camera.fx * torch.exp( residuals['f'] )
+        fy = camera.fy * torch.exp( residuals['f'] )
         cx = camera.cx + residuals['cx']
-        cy = camera.cx + residuals['cy']
+        cy = camera.cy + residuals['cy']
 
         projmat = get_projmat(
-            fx,fy,
-            cx,cy,
-            camera.H,camera.W,
-            camera.znear,camera.zfar
+            fx=fx,fy=fy,
+            H=camera.H,W=camera.W,
+            n=camera.znear,f=camera.zfar
         )
 
         return replace(
             camera,
             fx=fx,fy=fy,
             cx=cx,cy=cy,
-            projmat=projmat
+            projmat=projmat,
         )
