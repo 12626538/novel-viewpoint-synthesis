@@ -141,8 +141,9 @@ def convert_3du(
 
     # Downsample to 50K points
     N = len(pointcloud.points)
-    if N>150_000:
-        pointcloud = pointcloud.random_down_sample( 150_000 / N )
+    N_max = 500_000
+    if N > N_max:
+        pointcloud = pointcloud.random_down_sample( N_max / N )
 
     o3d.io.write_point_cloud(output_ply, pointcloud,write_ascii=True)
 

@@ -156,8 +156,6 @@ class PipeLineParams(ParamGroup):
         args.model_dir = os.path.join( os.path.abspath(args.model_dir), args.model_name)
         args.log_dir = os.path.join( os.path.abspath(args.log_dir), args.model_name)
 
-        os.makedirs(args.model_dir, exist_ok=True)
-        os.makedirs(args.log_dir, exist_ok=True)
 
         return super().extract(args)
 

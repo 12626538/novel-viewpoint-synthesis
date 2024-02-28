@@ -1,8 +1,8 @@
 #!/bin/sh
-if [ -d "~/novel-viewpoint-synthesis/" ]
+if [ -d "/home/jip/novel-viewpoint-synthesis/" ]
 then
-    CODE_DIR="~/novel-viewpoint-synthesis/";
-    DATA_DIR="~/data1/";
+    CODE_DIR="/home/jip/novel-viewpoint-synthesis/";
+    DATA_DIR="/home/jip/data1/";
 elif [ -d "/media/jip/T7/thesis/code/novel-viewpoint-synthesis/" ]
 then
     CODE_DIR="/media/jip/T7/thesis/code/novel-viewpoint-synthesis/";
@@ -13,6 +13,7 @@ python3 $CODE_DIR/train.py \
     -s "$DATA_DIR/bicycle" \
     --rescale 4 \
     --device cuda:0 \
-    --sh-degree 2 \
     --test-at 5000 7000 11000 14000 17000 20000 25000 30000 \
-    --save-at 7000 20000 25000 30000 \
+    --save-at 30000 \
+    --max-screen-size 200 \
+    --sh-degree 0

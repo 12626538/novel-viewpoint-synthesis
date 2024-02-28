@@ -43,13 +43,13 @@ class Gaussians(nn.Module):
 
         if sh_degree == 0:
             c = colors.shape[-1]
-            colors = torch.from_numpy(colors.reshape(-1,1,c)).to(device=device)
+            colors = torch.from_numpy(colors.reshape(-1,1,c)).to(device=device, dtype=torch.float32)
         else:
             n,c = colors.shape
             d = (sh_degree+1)**2
             _colors = np.zeros((n,d,c))
             _colors[:,0] = colors
-            colors = torch.from_numpy(_colors).to(device=device)
+            colors = torch.from_numpy(_colors).to(device=device, dtype=torch.float32)
 
         return Gaussians(
             means=means,
@@ -130,8 +130,8 @@ class Gaussians(nn.Module):
         # Extract colors
         colors = None
         if properties.issuperset({'red','green','blue'}):
-            colors = (1. + np.stack([vertex['red'], vertex['green'], vertex['blue']], axis=1, dtype=np.float32)) / (255.0+2.)
-            colors = sigmoid_inv( colors )
+            colors = np.stack([vertex['red'], vertex['green'], vertex['blue']], axis=1, dtype=np.float32) / 255.
+            colors = sigmoid_inv( colors.clip(1e-7, 1-1e-7) )
 
             kwargs['sh_degree'] = kwargs.get('sh_degree',2)
             D = (kwargs['sh_degree']+1)**2
@@ -363,7 +363,7 @@ class Gaussians(nn.Module):
         # Sanity check
         if colors.shape[1] != (self.sh_degree_max+1)**2:
             raise ValueError("Colors have wrong shape, expecting N,D,C with D=(sh_degree+1)^2. "
-                             f"Got {colors.shape}")
+                             f"Got {colors.shape} with sh_degree {sh_degree}")
 
         # Initialize opacities
         if opacities is None:
@@ -378,7 +378,8 @@ class Gaussians(nn.Module):
         self.means = nn.Parameter(means.float())
         self.scales = nn.Parameter(scales.float())
         self.quats = nn.Parameter(quats.float())
-        self.colors = nn.Parameter(colors.float())
+        self.colors_dc = nn.Parameter(colors[:,:1,:].float())
+        self.colors_fc = nn.Parameter(colors[:,1:,:].float())
         self.opacities = nn.Parameter(opacities.float())
 
         # Set up optimizer
@@ -387,7 +388,8 @@ class Gaussians(nn.Module):
                 {'params': [self.means], 'lr':lr_positions*scene_extend, 'name': 'means'},
                 {'params': [self.scales], 'lr':lr_scales, 'name': 'scales'},
                 {'params': [self.quats], 'lr':lr_quats, 'name': 'quats'},
-                {'params': [self.colors], 'lr':lr_colors, 'name': 'colors'},
+                {'params': [self.colors_dc], 'lr':lr_colors, 'name': 'colors_dc'},
+                {'params': [self.colors_fc], 'lr':lr_colors/20, 'name': 'colors_fc'},
                 {'params': [self.opacities], 'lr':lr_opacities, 'name': 'opacities'},
             ],
             eps=1e-15,
@@ -415,16 +417,19 @@ class Gaussians(nn.Module):
         self._n_prune_scale = 0
 
 
-    def init_lr_schedule(self, warmup_until=100, decay_for=20_000):
+    def init_lr_schedule(self, warmup_until=100, decay_from=20_000, decay_for=10_000):
         # Default learning rate schedule: 100 warmup iters, decay from there
-        warmup = lr_utils.cosine_warmup(warmup_until)
-        decay = lr_utils.log_linear(decay_for - warmup_until)
+        warmup = lr_utils.cosine_warmup(warmup_until, start=1e-8, end=1)
+        decay = lr_utils.log_linear(decay_for, start=1, end=1e-2)
 
         # Set scheduler for each group
         lambdas = []
         for group in self.optimizer.param_groups:
-            if group["name"] == "means":
-                lmbda = lambda epoch: warmup(epoch) if epoch <= warmup_until else decay(epoch - warmup_until)
+            if True: #group["name"] in {"means", "colors", "scales"}:
+                lmbda = lambda epoch: \
+                    warmup(epoch) if epoch <= warmup_until \
+                    else decay(epoch-decay_from) if epoch >= decay_from \
+                    else 1
             else:
                 lmbda = warmup
             lambdas.append(lmbda)
@@ -435,6 +440,10 @@ class Gaussians(nn.Module):
             lr_lambda=lambdas,
         )
 
+
+    @property
+    def colors(self) -> torch.Tensor:
+        return torch.hstack((self.colors_dc, self.colors_fc))
 
 
     @property
@@ -498,7 +507,7 @@ class Gaussians(nn.Module):
             pass
 
         if self.sh_degree_max > 0:
-            viewdirs = self.means.detach() - torch.from_numpy(camera.loc).float().to(self.device).unsqueeze(0)
+            viewdirs = self.means.detach() - torch.from_numpy(camera.loc).to(device=self.device, dtype=torch.float32).unsqueeze(0)
             viewdirs = viewdirs / torch.linalg.norm(viewdirs,dim=1,keepdim=True)
 
             # Convert SH features to features
@@ -520,7 +529,7 @@ class Gaussians(nn.Module):
             conics=conics,
             num_tiles_hit=num_tiles_hit,
             colors=self.act_colors( colors ),
-            opacity=self.act_opacities( self.opacities ) * compensation[...,None],
+            opacity=self.act_opacities( self.opacities ) * compensation.unsqueeze(-1),
             img_height=camera.H,
             img_width=camera.W,
             block_width=self.BLOCK_WIDTH,
@@ -687,7 +696,8 @@ class Gaussians(nn.Module):
                 'means':     torch.cat( (    means_clone,     means_split), dim=0),
                 'scales':    torch.cat( (   scales_clone,    scales_split), dim=0),
                 'quats':     torch.cat( (    quats_clone,     quats_split), dim=0),
-                'colors':    torch.cat( (   colors_clone,    colors_split), dim=0),
+                'colors_dc': torch.cat( (   colors_clone[:,:1,:],    colors_split[:,:1,:]), dim=0),
+                'colors_fc': torch.cat( (   colors_clone[:,1:,:],    colors_split[:,1:,:]), dim=0),
                 'opacities': torch.cat( (opacities_clone, opacities_split), dim=0),
             },
             prune_mask=prune_cond

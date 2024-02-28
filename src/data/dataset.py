@@ -153,6 +153,7 @@ class DataSet:
                     cy_frac=camera['cy_frac'],
                     gt_image=I,
                     name=camera['image'],
+                    znear=1e-3
                 ))
 
                 line = f.readline()

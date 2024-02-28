@@ -14,6 +14,6 @@ python3 $CODE_DIR/train.py \
     --device cuda:0 \
     --test-at 5000 7000 11000 14000 17000 20000 25000 30000 \
     --save-at 30000 \
-    --lr-scales 0.01 \
-    --max-screen-size 200 \
-    --max-density 0.001
+    --densify-until -1 \
+    --reset-opacity-until -1 \
+    --lr-scales 0.02
