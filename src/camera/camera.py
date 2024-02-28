@@ -16,6 +16,7 @@ class Camera(object):
             # INTRINSICS
             fovx:float=1.5708,fovy:float=1.0472,
             cx_frac:float=.5, cy_frac:float=.5,
+            zsign:float=1,
             # EXTRINSICS
             R:np.ndarray=np.eye(3),
             t:np.ndarray=np.zeros(3),
@@ -82,6 +83,8 @@ class Camera(object):
         self.cx_frac = cx_frac
         self.cy_frac = cy_frac
 
+        self.zsign = zsign
+
         # Extrinsics
         self.R = R
         self.t = t
@@ -109,7 +112,8 @@ class Camera(object):
         """4x4 Projection matrix, moving world coordinates to pixel coordinates"""
         return torch.from_numpy( get_projmat(
             znear=self.znear,zfar=self.zfar,
-            fovx=self.fovx,fovy=self.fovy
+            fovx=self.fovx,fovy=self.fovy,
+            zsign=self.zsign,
         ) ).to(device=self.device, dtype=torch.float32)
 
 

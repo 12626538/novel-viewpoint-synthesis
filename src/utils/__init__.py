@@ -98,7 +98,7 @@ def qvec2rotmat(q:torch.Tensor) -> torch.Tensor:
     return R
 
 
-def get_projmat(znear:float, zfar:float, fovx:float, fovy:float) -> np.ndarray:
+def get_projmat(znear:float, zfar:float, fovx:float, fovy:float, zsign:float) -> np.ndarray:
     """
     From http://www.songho.ca/opengl/gl_projectionmatrix.html
     """
@@ -110,7 +110,6 @@ def get_projmat(znear:float, zfar:float, fovx:float, fovy:float) -> np.ndarray:
     # a = 2 * fx / W
     # b = 2 * fy / H
 
-    zsign = 1.0
     return np.array([
         [  a, 0.0,          0.0,                 0.0],
         [0.0,   b,          0.0,                 0.0],

@@ -14,14 +14,28 @@ from scipy.spatial.transform import Rotation
 
 import time
 
+AXIS_X,AXIS_Y,AXIS_Z = np.eye(3)
+LEFT = -AXIS_X
+FORWARD = AXIS_Z
+UP = -AXIS_Y
+SPEED = .1
+
+LOOK_LEFT = Rotation.from_rotvec(AXIS_Y * np.pi/8 * SPEED).as_matrix()
+LOOK_UP = Rotation.from_rotvec(-AXIS_X * np.pi/8 * SPEED).as_matrix()
+
+TILT_LEFT = Rotation.from_rotvec(AXIS_Z * np.pi/16).as_matrix()
+
 dragging_start = None
 dragging_current = (0,0)
 R_drag = np.eye(3)
+zsign= 1
+
+mouse_offset = np.zeros(2)
 
 W,H = 1920,1080
 def cb_mouse(event, x, y, flags, param):
     # grab references to the global variables
-    global dragging_start,dragging_current,R_drag,R
+    global dragging_start,mouse_offset
     # if the left mouse button was clicked, record the starting
     # (x, y) coordinates and indicate that cropping is being
     # performed
@@ -29,18 +43,13 @@ def cb_mouse(event, x, y, flags, param):
     dragging_current = np.array((x,y))
     if event == cv2.EVENT_LBUTTONDOWN:
         dragging_start = np.array((x,y))
+    # elif event == cv2.EVENT_LBUTTONUP:
+    #     dragging_start = None
 
-    # check to see if the left mouse button was released
-    elif event == cv2.EVENT_LBUTTONUP:
-        dragging_start = None
+    if dragging_start is not None:
+        mouse_offset = (dragging_current - dragging_start) / np.array((W,H))
 
-        R = R_drag @ R
-        R_drag = np.eye(3)
 
-    elif dragging_start is not None:
-        degx,degy = (dragging_current - dragging_start) / np.array((W,H)) * np.pi/4.
-        degy*=-1
-        R_drag = Rotation.from_euler('yx',[degx,degy]).as_matrix()
 
 parser = argparse.ArgumentParser("Training Novel Viewpoint Synthesis")
 dp = DataParams(parser)
@@ -71,24 +80,13 @@ model = Gaussians.from_ply(
     **vars(model_args)
 )
 
-model.sh_degree_current = model.sh_degree_max
+model.sh_degree_current = 0#model.sh_degree_max
 
-AXIS_X,AXIS_Y,AXIS_Z = np.eye(3)
 
 loc = np.array([0.,0.,0.])
 glob_scale = 1
 bg = torch.tensor([0.,0.,0.],dtype=torch.float32, device=args.device)
-R = np.eye(3)
-
-LEFT = AXIS_X
-FORWARD = -AXIS_Z
-UP = AXIS_Y
-SPEED = .3
-
-LOOK_LEFT = Rotation.from_rotvec(AXIS_Y * np.pi/8 * SPEED).as_matrix()
-LOOK_UP = Rotation.from_rotvec(-AXIS_X * np.pi/8 * SPEED).as_matrix()
-
-TILT_LEFT = Rotation.from_rotvec(AXIS_Z * np.pi/16).as_matrix()
+rot = np.zeros(2)
 
 cv2.namedWindow("image")
 cv2.setMouseCallback("image", cb_mouse)
@@ -105,14 +103,18 @@ while True:
         _frame = 0
         _tstart = time.time()
 
+    rot += mouse_offset * -zsign
+    R = Rotation.from_rotvec(-AXIS_X * rot[1] / (np.pi*4)).as_matrix() @ Rotation.from_rotvec(AXIS_Y * rot[0] / (np.pi*4)).as_matrix()
+
     _R = R_drag@R
     camera = Camera(
         R = _R,
-        t = loc @ _R.T,
+        t = -loc @ _R.T,
         fovx=np.deg2rad(90),
         fovy=np.deg2rad(60),
         H=H,W=W,
-        device=args.device
+        device=args.device,
+        zsign=zsign
     )
     render = (model.render(camera, glob_scale=glob_scale, bg=bg).rendering.permute(1,2,0).detach().cpu().numpy()*255).astype(np.uint8)
 
@@ -134,8 +136,8 @@ while True:
     elif key == ord(' '): loc += UP * SPEED
     elif key == ord('z'): loc -= UP * SPEED
 
-    elif key == ord('q'): R = TILT_LEFT @ R
-    elif key == ord('e'): R = TILT_LEFT.T @ R
+    # elif key == ord('q'): R = TILT_LEFT @ R
+    # elif key == ord('e'): R = TILT_LEFT.T @ R
 
     elif key == 81: R = R @ LOOK_LEFT # LEFT-ARROW
     elif key == 82: R = LOOK_UP @ R # UP-ARROW
