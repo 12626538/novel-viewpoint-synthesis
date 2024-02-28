@@ -61,10 +61,8 @@ def train_report(
                 summarizer.add_scalar("Pruning/Num splats cloned",model._n_clone, iter)
                 summarizer.add_scalar("Pruning/Num splats pruned (total)",model._n_prune, iter)
                 summarizer.add_scalar("Pruning/Num splats pruned by opacity",model._n_prune_opacity, iter)
-                summarizer.add_scalar("Pruning/Num splats cloned by view radius",model._n_prune_radii, iter)
+                summarizer.add_scalar("Pruning/Num splats pruned by view radius",model._n_prune_radii, iter)
                 summarizer.add_scalar("Pruning/Num splats pruned by global radius",model._n_prune_scale, iter)
-
-            # summarizer.add_histogram("dev/radii", rendering_pkg.radii[rendering_pkg.visibility_mask].detach().cpu().numpy().clip(0,train_args.max_screen_size+1), iter)
 
         if iter==1 or iter%100 == 0:
 
@@ -290,6 +288,9 @@ if __name__ == '__main__':
     if pipeline_args.no_pbar:
         USE_TQDM = False
 
+    os.makedirs(args.model_dir, exist_ok=True)
+    os.makedirs(args.log_dir, exist_ok=True)
+
     # Set torch device
     try:
         torch.cuda.set_device(args.device)
@@ -327,6 +328,14 @@ if __name__ == '__main__':
         model = Gaussians.from_ply(
             path_to_ply_file=fname,
             device=args.device,
+            **vars(model_args)
+        )
+    elif os.path.isdir(os.path.join(data_args.source_path,"sparse")):
+        fname = os.path.join(data_args.source_path, "sparse","0","points3D.txt")
+        print(f"Loading COLMAP model from {fname}")
+        model = Gaussians.from_colmap(
+            device=args.device,
+            path_to_points3D_file=fname,
             **vars(model_args)
         )
     else:
