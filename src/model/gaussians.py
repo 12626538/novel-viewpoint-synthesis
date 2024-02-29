@@ -135,6 +135,12 @@ class Gaussians(nn.Module):
 
             kwargs['sh_degree'] = kwargs.get('sh_degree',2)
             D = (kwargs['sh_degree']+1)**2
+
+            # If sh_degree > 0, account for 0-band SH color
+            if D>1:
+                # C0 from https://github.com/nerfstudio-project/gsplat/blob/main/gsplat/cuda/csrc/sh.cuh
+                colors /= 0.28209479177387814
+
             features = np.zeros((colors.shape[0],D, colors.shape[1]))
             features[:,0,:] = colors
 
@@ -333,7 +339,7 @@ class Gaussians(nn.Module):
         # Initialize scales
         if scales is None:
             # scales = torch.log( torch.ones(num_points, 3, device=self.device) / (scene_extend*10) )
-            scales = torch.log( torch.ones(num_points, 3, device=self.device) * .01 )
+            scales = torch.log( torch.ones(num_points, 3, device=self.device) * .015 )
 
         # Initialize rotation
         if quats is None:
@@ -368,7 +374,7 @@ class Gaussians(nn.Module):
         # Initialize opacities
         if opacities is None:
             # such that sigmoid(opacity) = 0.1
-            opacities = torch.ones((num_points, 1), device=self.device) * sigmoid_inv(.5)
+            opacities = torch.ones((num_points, 1), device=self.device) * sigmoid_inv(.8)
 
         # Sanity check: make sure all parameters have same number of points
         if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities)):
@@ -417,7 +423,7 @@ class Gaussians(nn.Module):
         self._n_prune_scale = 0
 
 
-    def init_lr_schedule(self, warmup_until=100, decay_from=20_000, decay_for=10_000):
+    def init_lr_schedule(self, warmup_until=400, decay_from=15_000, decay_for=15_000):
         # Default learning rate schedule: 100 warmup iters, decay from there
         warmup = lr_utils.cosine_warmup(warmup_until, start=1e-8, end=1)
         decay = lr_utils.log_linear(decay_for, start=1, end=1e-2)
@@ -425,13 +431,16 @@ class Gaussians(nn.Module):
         # Set scheduler for each group
         lambdas = []
         for group in self.optimizer.param_groups:
-            if True: #group["name"] in {"means", "colors", "scales"}:
+            if group["name"] in {"means", "colors", "scales"}:
                 lmbda = lambda epoch: \
                     warmup(epoch) if epoch <= warmup_until \
                     else decay(epoch-decay_from) if epoch >= decay_from \
                     else 1
             else:
-                lmbda = warmup
+                lmbda = lambda epoch: \
+                    warmup(epoch) if epoch <= warmup_until \
+                    else decay(epoch-decay_from) if epoch >= decay_from \
+                    else 1
             lambdas.append(lmbda)
 
         # Create actualy lr scheduler
@@ -511,14 +520,13 @@ class Gaussians(nn.Module):
             viewdirs = viewdirs / torch.linalg.norm(viewdirs,dim=1,keepdim=True)
 
             # Convert SH features to features
-            # TODO: these features should still be properly converted to colors?
             colors = gsplat.spherical_harmonics(
                 degrees_to_use=self.sh_degree_current,
                 viewdirs=viewdirs,
                 coeffs=self.colors,
             )
         else:
-            colors = self.colors.view(-1,3)
+            colors = self.colors.view(self.num_points,-1)
 
 
         # Generate image

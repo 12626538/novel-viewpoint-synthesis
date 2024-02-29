@@ -52,11 +52,13 @@ def convert_3du(
     # Set up video reader
     video3d_reader = video3d.Video3DReader(video3d_file, video3d.READ_ALL)
 
-    # Set up output variables
+    # Sum pcd of each frame here
     pointcloud = None
 
+    # Output camera parameters here
     f_cameras = open(output_json, "w")
 
+    # Start iterating video reader
     frame_id = 0
     for i, frame in tqdm.tqdm(enumerate(video3d_reader), desc="Converting 3DU data", mininterval=1):
 
@@ -74,7 +76,7 @@ def convert_3du(
         # Get parameters
         intrinsics = np.squeeze(np.array(info['cameraIntrinsics'])).T
         extrinsics = np.squeeze(np.array(info['localToWorld'])).T
-        extrinsics_inv = np.linalg.inv(extrinsics)
+        extrinsics_inv = np.linalg.inv(extrinsics) # world-to-view
 
         # Set camera
         H,W = img.shape[:2]
@@ -107,11 +109,13 @@ def convert_3du(
         # Combine color and depth
         color_image = o3d.geometry.Image(np.array(img[:,:,::-1]))
 
+        # Get depth image based on confidence
         depth_raw = depth.astype(np.uint16)
         depth_image = np.zeros((depth.shape[0], depth.shape[1]), dtype=np.uint16)
         depth_image[confidence >= 2] = depth_raw[confidence >= 2]
         depth_image = o3d.geometry.Image(depth_image)
 
+        # Merge color and depth into RGBD
         rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
             color_image, depth_image, depth_scale=1000, depth_trunc=5.0,convert_rgb_to_intensity=False)
 
@@ -131,25 +135,25 @@ def convert_3du(
 
         # Convert points to world coordinates
         pcd.transform(extrinsics)
+
+        # Add pointcloud to running reconstruction
         if pointcloud is None:
             pointcloud = pcd
         else:
             pointcloud += pcd
 
-
         frame_id += 1
 
-    # Downsample to 50K points
-    N = len(pointcloud.points)
-    N_max = 500_000
-    if N > N_max:
-        pointcloud = pointcloud.random_down_sample( N_max / N )
+    # Reduce to more useful construction
+    pointcloud = pointcloud.voxel_down_sample(voxel_size=0.025)
 
-    o3d.io.write_point_cloud(output_ply, pointcloud,write_ascii=True)
+    print("Final point cloud size:", len(pointcloud.points))
+
+    o3d.io.write_point_cloud(output_ply, pointcloud, write_ascii=True)
 
     f_cameras.close()
 
 if __name__ == '__main__':
-    video3d_file = '/home/jip/data1/3du_data_5/begin_good_day_212/upload/2023_11_01__11_14_30/video.v3dc'
-    output_dir = "/home/jip/data1/3du_data_5/"
+    video3d_file = '/home/jip/data1/begin_good_day_212/upload/2023_11_01__11_14_30/video.v3dc'
+    output_dir = "/home/jip/data1/3du_data_6/"
     convert_3du(video3d_file, output_dir)

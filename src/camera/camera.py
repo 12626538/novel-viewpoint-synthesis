@@ -22,7 +22,7 @@ class Camera(object):
             t:np.ndarray=np.zeros(3),
             #MISC
             gt_image:torch.Tensor=None,
-            H:int=1920,W:int=1080,
+            H:int=1080,W:int=1920,
             znear:float=0.01, zfar:float=100.,
             name:str=None,
             device='cuda',

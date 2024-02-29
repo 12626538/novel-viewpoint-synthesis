@@ -16,4 +16,7 @@ python3 $CODE_DIR/train.py \
     --save-at 30000 \
     --densify-until -1 \
     --reset-opacity-until -1 \
-    --lr-scales 0.02
+    --lr-positions 0 \
+    --lr-scales 0.005 \
+    --lr-colors 0.001 \
+    --oneup-sh-every 3000
