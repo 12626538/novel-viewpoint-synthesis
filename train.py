@@ -22,9 +22,9 @@ except ModuleNotFoundError:
 
 from src.model.gaussians import Gaussians,RenderPackage
 from src.data import DataSet
-from src.utils.loss_utils import L1Loss,DSSIMLoss,SSIM,CombinedLoss
+from src.utils.loss_utils import L1Loss,MSELoss,DSSIMLoss,SSIM,CombinedLoss
+from src.utils.metric_utils import LPIPS
 from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams,get_args
-# from src.camera import OptimizableCamera
 
 def train_report(
     iter:int, # !first iter is 1, not 0!
@@ -68,7 +68,7 @@ def train_report(
 
             camera = dataset.cameras[0]
             render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
-            save_image(render,"renders/latest.png")
+            save_image(render,f"renders/latest_{pipeline_args.model_name}.png")
 
     # Save image
     if iter in train_args.save_at:
@@ -102,23 +102,27 @@ def train_report(
             print("Set:",partition.upper())
 
             # Metrics to run
-            metrics = {
+            metric_funcs = {
                 'PSNR':psnr,
                 'loss':loss_fn,
-                'SSIM':SSIM(device=device)
-                # TODO: add LPIPS
+                'SSIM':SSIM(device=device),
+                'LPIPS': LPIPS(net='alex'),
             }
-            stats_lsts = {
-                metric:[] for metric in metrics
-            }
-            reduction = {
+            metric_reduction = {
                 'PSNR': np.mean,
                 'loss': np.mean,
                 'SSIM': np.mean,
+                'LPIPS': np.mean,
+            }
+            stats_lsts = {
+                metric:[] for metric in metric_funcs
             }
 
-            out_dir = os.path.join(pipeline_args.log_dir, f"iter_{iter}", "renders", partition)
-            os.makedirs(out_dir, exist_ok=True)
+            # On last iter, also save to disk
+            out_dir = None
+            if iter == train_args.iterations:
+                out_dir = os.path.join(pipeline_args.log_dir, f"iter_{iter}", "renders", partition)
+                os.makedirs(out_dir, exist_ok=True)
 
             # Get testing cameras
             for i,cam in enumerate(dataset.iter(partition)):
@@ -130,7 +134,7 @@ def train_report(
                 pkg = model.render(cam, bg=bg)
 
                 # Get result for each metric to test on
-                for metric,metric_func in metrics.items():
+                for metric,metric_func in metric_funcs.items():
 
                     # Compute metric
                     stat = metric_func(pkg.rendering, cam.gt_image)
@@ -146,8 +150,7 @@ def train_report(
                 if summarizer is not None:
                     summarizer.add_images(f"{partition}_renders/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)), iter )
 
-                # On last iter, also save to disk
-                if iter == train_args.iterations:
+                if out_dir is not None:
                     save_image(
                         pkg.rendering,
                         os.path.join(out_dir, cam.name)
@@ -157,7 +160,7 @@ def train_report(
             stats = {}
             for metric,values in stats_lsts.items():
                 # Compute the final value
-                stats[metric] = reduction[metric](values)
+                stats[metric] = metric_reduction[metric](values)
 
                 print(metric, stats[metric])
                 if summarizer is not None:
@@ -178,10 +181,11 @@ def train_loop(
     model.init_lr_schedule()
 
     # Set up loss
-    loss_fn = CombinedLoss(
-        ( L1Loss(), 1.-train_args.lambda_dssim ),
-        ( DSSIMLoss(device=device), train_args.lambda_dssim )
-    )
+    loss_fn = LPIPS(device=device)
+    # CombinedLoss(
+    #     ( L1Loss(), 1.-train_args.lambda_dssim ),
+    #     ( DSSIMLoss(device=device), train_args.lambda_dssim )
+    # )
 
     # Keep a running (smoothed) loss for logging
     loss_smooth_mult = .9
