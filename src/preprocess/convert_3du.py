@@ -58,6 +58,11 @@ def convert_3du(
     # Output camera parameters here
     f_cameras = open(output_json, "w")
 
+    # Keep track of camera positions and orientations
+    camera_locs = []
+    camera_lookats = []
+    lookat = np.array([0,0,1])
+
     # Start iterating video reader
     frame_id = 0
     for i, frame in tqdm.tqdm(enumerate(video3d_reader), desc="Converting 3DU data", mininterval=1):
@@ -87,19 +92,25 @@ def convert_3du(
 
         if i < 300:
             fname = f'{frame_id:06d}.png'
+            R = extrinsics_inv[:3,:3]
+            t = extrinsics_inv[:3,3]
+
             f_cameras.write(json.dumps({
                 "image": fname,
                 "fovx": focal2fov(intrinsics[0,0], W),
                 "fovy": focal2fov(intrinsics[1,1], H),
                 "cx_frac": intrinsics[0,2] / W,
                 "cy_frac": intrinsics[1,2] / H,
-                "R": extrinsics_inv[:3,:3].tolist(),
-                "t": extrinsics_inv[:3,3].tolist(),
+                "R": R.tolist(),
+                "t": t.tolist(),
             })+"\n")
 
             # Save frame
             img = frame.img().astype(np.uint8)
             cv2.imwrite(os.path.join(output_images, fname), img)
+
+            camera_locs.append( - R.T @ t)
+            camera_lookats.append( R.T @ lookat )
 
         # Reszie image to match depth info
         row_ratio = depth.shape[0] / img.shape[0]
@@ -144,14 +155,21 @@ def convert_3du(
 
         frame_id += 1
 
+    f_cameras.close()
+
+    # Create 'pointcloud' from camear locations and lookats
+    camera_locs = np.stack(camera_locs, axis=0)
+    camera_lookats = np.stack(camera_lookats, axis=0)
+    camera_pcd = o3d.geometry.PointCloud(points=o3d.utils.Vector3dVector(camera_locs))
+    camera_pcd.normals = o3d.utils.Vector3dVector(camera_lookats)
+    fname = os.path.join( os.path.dirname(output_ply), 'cameras.ply' )
+    o3d.io.write_point_cloud(fname, camera_pcd, write_ascii=True)
+
     # Reduce to more useful construction
     pointcloud = pointcloud.voxel_down_sample(voxel_size=0.025)
-
+    o3d.io.write_point_cloud(output_ply, pointcloud, write_ascii=True)
     print("Final point cloud size:", len(pointcloud.points))
 
-    o3d.io.write_point_cloud(output_ply, pointcloud, write_ascii=True)
-
-    f_cameras.close()
 
 if __name__ == '__main__':
     video3d_file = '/home/jip/data1/begin_good_day_212/upload/2023_11_01__11_14_30/video.v3dc'
