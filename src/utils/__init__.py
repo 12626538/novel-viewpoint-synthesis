@@ -102,6 +102,20 @@ def get_projmat(znear:float, zfar:float, fovx:float, fovy:float, zsign:float) ->
     """
     From http://www.songho.ca/opengl/gl_projectionmatrix.html
     """
+    t = znear * math.tan(0.5 * fovy)
+    b = -t
+    r = znear * math.tan(0.5 * fovx)
+    l = -r
+    n = znear
+    f = zfar
+    return np.array(
+        [
+            [2 * n / (r - l), 0.0, (r + l) / (r - l), 0.0],
+            [0.0, 2 * n / (t - b), (t + b) / (t - b), 0.0],
+            [0.0, 0.0, (f + n) / (f - n), -1.0 * f * n / (f - n)],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+    )
     n = znear
     f = zfar
 
