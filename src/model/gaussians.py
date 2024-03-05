@@ -1,4 +1,4 @@
-from collections import namedtuple
+from dataclasses import dataclass
 import os
 import gsplat
 import math
@@ -12,8 +12,23 @@ from plyfile import PlyElement, PlyData
 from src.camera import Camera
 from src.utils import colmap_utils, qvec2rotmat, sigmoid_inv, lr_utils
 
+# TODO:
+from src.model.blur import Blurrer
+
 # An instance of this is returned by the `Gaussians.render` method
-RenderPackage = namedtuple("RenderPackage", ["rendering","xys","radii","visibility_mask","alpha"])
+@dataclass
+class RenderPackage:
+    """
+    A simple dataclass containing all relevant properties of the
+    `Gaussians.render` method.
+    """
+    rendering:torch.Tensor # Shape C,H,W
+    xys:torch.Tensor # Shape N,3
+    radii:torch.Tensor # Shape N
+    visibility_mask:torch.BoolTensor # Shape N
+    alpha:torch.Tensor # Shape H,W
+    blur_quat:torch.Tensor # If `blur=True` shape N,4, else None
+    blur_scale:torch.Tensor # If `blur=True` shape N,3, else None
 
 class Gaussians(nn.Module):
     BLOCK_WIDTH = 16
@@ -273,6 +288,7 @@ class Gaussians(nn.Module):
         lr_quats:float=0.001,
         lr_colors:float=0.0025,
         lr_opacities:float=0.05,
+        lr_blur:float=0.001,
     ):
         """
         Set up Gaussians instance
@@ -388,6 +404,10 @@ class Gaussians(nn.Module):
         self.colors_fc = nn.Parameter(colors[:,1:,:].float())
         self.opacities = nn.Parameter(opacities.float())
 
+        # TODO: tidy this up
+        self.blurrer = Blurrer()
+        self.blurrer.to(device=self.device)
+
         # Set up optimizer
         self.optimizer = optim.Adam(
             [
@@ -397,6 +417,7 @@ class Gaussians(nn.Module):
                 {'params': [self.colors_dc], 'lr':lr_colors, 'name': 'colors_dc'},
                 {'params': [self.colors_fc], 'lr':lr_colors/20, 'name': 'colors_fc'},
                 {'params': [self.opacities], 'lr':lr_opacities, 'name': 'opacities'},
+                {'params': self.blurrer.parameters(), 'lr':lr_blur, 'name':'deblurrer' } # TODO
             ],
             eps=1e-15,
             lr=0.0,
@@ -431,16 +452,17 @@ class Gaussians(nn.Module):
         # Set scheduler for each group
         lambdas = []
         for group in self.optimizer.param_groups:
+            lmbda = lambda _: 1.
             if group["name"] in {"means", "colors", "scales"}:
                 lmbda = lambda epoch: \
                     warmup(epoch) if epoch <= warmup_until \
                     else decay(epoch-decay_from) if epoch >= decay_from \
-                    else 1
+                    else 1.
             else:
                 lmbda = lambda epoch: \
                     warmup(epoch) if epoch <= warmup_until \
                     else decay(epoch-decay_from) if epoch >= decay_from \
-                    else 1
+                    else 1.
             lambdas.append(lmbda)
 
         # Create actualy lr scheduler
@@ -465,6 +487,7 @@ class Gaussians(nn.Module):
             camera:Camera,
             glob_scale:float=1.0,
             bg:torch.Tensor=None,
+            blur:bool=False # TODO
         ) -> RenderPackage:
         """
         Render a Camera instance using gaussian splatting
@@ -491,12 +514,23 @@ class Gaussians(nn.Module):
         if bg is None:
             bg = torch.rand(3, device=self.device)
 
+        viewdirs = self.means.detach() - torch.from_numpy(camera.loc).to(device=self.device, dtype=torch.float32).unsqueeze(0)
+
+        quats = self.act_quats( self.quats )
+        scales = self.act_scales( self.scales )
+        res_quat, res_scales = None, None
+        # TODO
+        if blur:
+            res_quat, res_scales = self.blurrer(self.means, quats, scales, viewdirs)
+            quats = quats * res_quat
+            scales = scales * res_scales
+
         # Project Gaussians from 3D to 2D
         xys, depths, radii, conics, compensation, num_tiles_hit, cov3d = gsplat.project_gaussians(
             means3d=self.means,
-            scales=self.act_scales( self.scales ),
+            scales=scales, #self.act_scales( self.scales ),
             glob_scale=glob_scale,
-            quats=self.act_quats( self.quats ),
+            quats=quats, #self.act_quats( self.quats ),
             viewmat=camera.viewmat,
             projmat=camera.projmat @ camera.viewmat,
             fx=camera.fx,
@@ -516,7 +550,6 @@ class Gaussians(nn.Module):
             pass
 
         if self.sh_degree_max > 0:
-            viewdirs = self.means.detach() - torch.from_numpy(camera.loc).to(device=self.device, dtype=torch.float32).unsqueeze(0)
             viewdirs = viewdirs / torch.linalg.norm(viewdirs,dim=1,keepdim=True)
 
             # Convert SH features to features
@@ -550,7 +583,9 @@ class Gaussians(nn.Module):
             xys=xys,
             radii=radii,
             visibility_mask=(radii > 0).squeeze(),
-            alpha=out_alpha
+            alpha=out_alpha,
+            blur_quat=res_quat,
+            blur_scale=res_scales
         )
     forward=render
 

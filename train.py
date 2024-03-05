@@ -1,4 +1,3 @@
-import argparse
 import os
 import numpy as np
 
@@ -22,20 +21,19 @@ except ModuleNotFoundError:
 
 from src.model.gaussians import Gaussians,RenderPackage
 from src.data import DataSet
-from src.utils.loss_utils import L1Loss,MSELoss,DSSIMLoss,SSIM,CombinedLoss
-from src.utils.metric_utils import LPIPS
+from src.utils.metric_utils import get_loss_fn,SSIM,LPIPS
 from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams,get_args
 
 def train_report(
     iter:int, # !first iter is 1, not 0!
     model:Gaussians,
     dataset:DataSet,
+    rendering_pkg:RenderPackage,
     device,
     train_args:TrainParams,
     pipeline_args:PipeLineParams,
-    rendering_pkg:RenderPackage,
+    loss_pkg:dict[str,float],
     smoothed_loss:float,
-    loss_fn:callable,
     pbar:'tqdm'=None,
     summarizer:'SummaryWriter'=None,
 ):
@@ -51,6 +49,8 @@ def train_report(
     if summarizer is not None:
         if iter%10 == 0:
             summarizer.add_scalar("Train/Loss", smoothed_loss, iter)
+            for name in loss_pkg:
+                summarizer.add_scalar(f"Train/Loss - {name}", loss_pkg[name], iter)
 
             for group in model.optimizer.param_groups:
                 summarizer.add_scalar(f"LearningRate/{group['name']}", group['lr'], iter)
@@ -64,10 +64,15 @@ def train_report(
                 summarizer.add_scalar("Pruning/Num splats pruned by view radius",model._n_prune_radii, iter)
                 summarizer.add_scalar("Pruning/Num splats pruned by global radius",model._n_prune_scale, iter)
 
+            if rendering_pkg.blur_quat is not None:
+                summarizer.add_scalar("Blurring/average weight quat", rendering_pkg.blur_quat.mean(), iter)
+            if rendering_pkg.blur_scale is not None:
+                summarizer.add_scalar("Blurring/average weight scale", rendering_pkg.blur_scale.mean(), iter)
+
         if iter==1 or iter%100 == 0:
 
             camera = dataset.cameras[0]
-            render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
+            render = model.render(camera, bg=torch.zeros(3,device=device), blur=False).rendering
             save_image(render,f"renders/latest_{pipeline_args.model_name}.png")
 
     # Save image
@@ -104,13 +109,11 @@ def train_report(
             # Metrics to run
             metric_funcs = {
                 'PSNR':psnr,
-                'loss':loss_fn,
                 'SSIM':SSIM(device=device),
                 'LPIPS': LPIPS(net='alex'),
             }
             metric_reduction = {
                 'PSNR': np.mean,
-                'loss': np.mean,
                 'SSIM': np.mean,
                 'LPIPS': np.mean,
             }
@@ -131,7 +134,7 @@ def train_report(
                 if i%eval_every != 0:
                     continue
 
-                pkg = model.render(cam, bg=bg)
+                pkg = model.render(cam, bg=bg, blur=False)
 
                 # Get result for each metric to test on
                 for metric,metric_func in metric_funcs.items():
@@ -178,14 +181,14 @@ def train_loop(
 ):
 
     # initialize lr schedule
-    model.init_lr_schedule()
+    model.init_lr_schedule(
+        warmup_until=len(dataset),
+        decay_for=train_args.iterations//3,
+        decay_from=train_args.iterations - train_args.iterations//3
+    )
 
     # Set up loss
-    loss_fn = LPIPS(device=device)
-    # CombinedLoss(
-    #     ( L1Loss(), 1.-train_args.lambda_dssim ),
-    #     ( DSSIMLoss(device=device), train_args.lambda_dssim )
-    # )
+    loss_fn = get_loss_fn(vars(train_args))
 
     # Keep a running (smoothed) loss for logging
     loss_smooth_mult = .9
@@ -215,8 +218,9 @@ def train_loop(
 
         # Forward pass
         camera = next(dataset_cycle)
-        rendering_pkg = model.render(camera, bg=background)
-        loss = loss_fn(rendering_pkg.rendering, camera.gt_image)
+        rendering_pkg = model.render(camera, bg=background, blur=pipeline_args.do_blur)
+
+        loss,loss_pkg = loss_fn(rendering_pkg.rendering, camera.gt_image)
 
         # Compute gradients
         loss.backward()
@@ -266,12 +270,12 @@ def train_loop(
                 iter=iter,
                 model=model,
                 dataset=dataset,
+                rendering_pkg=rendering_pkg,
                 device=device,
                 train_args=train_args,
                 pipeline_args=pipeline_args,
-                rendering_pkg=rendering_pkg,
                 smoothed_loss=loss_smooth,
-                loss_fn=loss_fn,
+                loss_pkg=loss_pkg,
                 pbar=pbar,
                 summarizer=summarizer
             )
@@ -286,7 +290,8 @@ if __name__ == '__main__':
 
     # Get args
     args,(data_args,model_args,train_args,pipeline_args) = get_args(
-        DataParams, ModelParams, TrainParams, PipeLineParams
+        DataParams, ModelParams, TrainParams, PipeLineParams,
+        save_args=True
     )
 
     if pipeline_args.no_pbar:

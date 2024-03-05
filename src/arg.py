@@ -32,7 +32,7 @@ class ParamGroup(object):
 
             # Set type
             if type(value) == bool:
-                kwargs['action'] = 'store_true'
+                kwargs['action'] = 'store_false' if value else 'store_true'
             elif type(value) == list:
                 kwargs['nargs'] = '+'
                 kwargs['type'] = type(value[0])
@@ -71,6 +71,7 @@ class ModelParams(ParamGroup):
         self.lr_quats     = 0.001
         self.lr_colors    = 0.0025
         self.lr_opacities = 0.05
+        self.lr_blur      = 0.001
         super().__init__(*arg,**kwarg)
 
 
@@ -79,7 +80,7 @@ class DataParams(ParamGroup):
     Arguments to be passed when construction a ColmapDataSet instance
     """
     def __init__(self, *arg,**kwarg):
-        self._source_path_=''
+        self._source_path=''
         self.images_folder='images'
         self.data_folder='sparse/0'
         self.rescale=1
@@ -114,7 +115,10 @@ class TrainParams(ParamGroup):
         self.min_opacity=0.005
         self.max_screen_size=20
 
-        self.lambda_dssim=0.2
+        self.loss_weight_mse = 1.
+        self.loss_weight_dssim = .2
+        self.loss_weight_lpips = .1
+        self.loss_weight_mae = 0.
 
         super().__init__(*arg,**kwarg)
 
@@ -144,6 +148,7 @@ class PipeLineParams(ParamGroup):
         self.white_background = False
 
         self.no_pbar = False
+        self.do_blur = False
         super().__init__(*arg,**kwarg)
 
     def extract(self,args):
@@ -159,7 +164,11 @@ class PipeLineParams(ParamGroup):
 
         return super().extract(args)
 
-def get_args(*groups:type[ParamGroup], parser=ArgumentParser("Training Novel Viewpoint Synthesis")) -> tuple[Namespace, list[Namespace]]:
+def get_args(
+        *groups:type[ParamGroup],
+        parser=ArgumentParser("Training Novel Viewpoint Synthesis"),
+        save_args:bool=False,
+    ) -> tuple[Namespace, list[Namespace]]:
     """
     Get args for a specified collection of parameter groups
 
@@ -175,6 +184,8 @@ def get_args(*groups:type[ParamGroup], parser=ArgumentParser("Training Novel Vie
     - `parser` - Optionally, a pre-defined `ArgumentParser` can be passed
         as `parser` kwarg. This allows user to add arguments before passing it
         through this function
+    - `save_args:bool=False` - If set to True, create a `args.ini` file inside
+        the `args.model_dir` with all arguments in the argparser
 
     Returns:
     - `args:Namespace` - The args returned by the `parser`
@@ -201,21 +212,13 @@ def get_args(*groups:type[ParamGroup], parser=ArgumentParser("Training Novel Vie
     # Extract all args
     args = parser.parse_args()
 
-    if hasattr(args, 'load_checkpoint'):
-        config = configparser.ConfigParser()
-        config['parameters'] = {}
-        config.read(os.path.join(args.load_checkpoint,'args.ini'))
-
-        for key,val in config['parameters'].items():
-            setattr(args, key, val)
-
     # Split `args` back into groups
     args_groups:list[Namespace] = []
     for parser_group in parser_groups:
         args_groups.append( parser_group.extract(args) )
 
     # Save args in model directory
-    if hasattr(args,'model_dir'):
+    if save_args and hasattr(args,'model_dir'):
         config = configparser.ConfigParser()
         config['parameters'] = {}
 
