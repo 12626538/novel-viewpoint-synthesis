@@ -18,8 +18,12 @@ def convert_3du(
         video3d_file:str,
         output_dir:str,
         dname_images:str='images',
-        fname_ply:str='pointcloud.ply',
+        fname_ply:str='point_cloud.ply',
         fname_json:str='cameras.json',
+        start_frame:int=0,
+        end_frame:int=-1,
+        camera_every:int=1,
+        voxel_size:float=0.025
     ):
     """
     Function that createa a .ply point cloud from a video3d file.
@@ -64,19 +68,23 @@ def convert_3du(
     lookat = np.array([0,0,1])
 
     # Start iterating video reader
-    frame_id = 0
-    for i, frame in tqdm.tqdm(enumerate(video3d_reader), desc="Converting 3DU data", mininterval=1):
+    uid = 0
+    for frame_idx, frame in tqdm.tqdm(enumerate(video3d_reader), desc="Converting 3DU data", mininterval=1):
 
         if frame is None: break;
-        # if i % 10 != 0: continue;
-        if i >= 700:
-            break
+        if frame_idx<start_frame or frame_idx%camera_every!=0: continue;
+        if end_frame > 0 and frame_idx>=end_frame: break;
 
         # Read data
         info = frame.info()
         img = frame.img().astype(np.uint8)
         depth = np.squeeze(frame.depth())
         confidence = np.squeeze(frame.confidence())
+
+        if 0 in img.shape:
+            continue
+
+        uid += 1
 
         # Get parameters
         intrinsics = np.squeeze(np.array(info['cameraIntrinsics'])).T
@@ -85,39 +93,42 @@ def convert_3du(
 
         # Set camera
         H,W = img.shape[:2]
-        # TODO this is to fix the fovx and fovy values, why?
-        # Seems to suggest video was downsampled from 1920x1440?
+        # Camera intrinsics are based on the original image, which is
+        # twice the resolution of `img`!
         H*=2
         W*=2
 
-        if i < 300:
-            fname = f'{frame_id:06d}.png'
-            R = extrinsics_inv[:3,:3]
-            t = extrinsics_inv[:3,3]
+        R = extrinsics_inv[:3,:3]
+        t = extrinsics_inv[:3,3]
 
-            f_cameras.write(json.dumps({
-                "image": fname,
-                "fovx": focal2fov(intrinsics[0,0], W),
-                "fovy": focal2fov(intrinsics[1,1], H),
-                "cx_frac": intrinsics[0,2] / W,
-                "cy_frac": intrinsics[1,2] / H,
-                "R": R.tolist(),
-                "t": t.tolist(),
-            })+"\n")
-
-            # Save frame
-            img = frame.img().astype(np.uint8)
+        fname = f'{frame_idx:06d}.png'
+        # Save frame
+        img = frame.img().astype(np.uint8)
+        if not os.path.isfile(os.path.join(output_images, fname)):
             cv2.imwrite(os.path.join(output_images, fname), img)
 
-            camera_locs.append( - R.T @ t)
-            camera_lookats.append( R.T @ lookat )
+        f_cameras.write(json.dumps({
+            "image": fname,
+            "fovx": focal2fov(intrinsics[0,0], W),
+            "fovy": focal2fov(intrinsics[1,1], H),
+            "cx_frac": intrinsics[0,2] / W,
+            "cy_frac": intrinsics[1,2] / H,
+            "R": R.tolist(),
+            "t": t.tolist(),
+        })+"\n")
+
+        camera_locs.append( - R.T @ t)
+        camera_lookats.append( R.T @ lookat )
+
+        if 0 in depth.shape:
+            continue
 
         # Reszie image to match depth info
         row_ratio = depth.shape[0] / img.shape[0]
         col_ratio = depth.shape[1] / img.shape[1]
         img = cv2.resize(img, (depth.shape[1], depth.shape[0]))
 
-        # Combine color and depth
+        # Convert to open3d Image instance
         color_image = o3d.geometry.Image(np.array(img[:,:,::-1]))
 
         # Get depth image based on confidence
@@ -153,25 +164,37 @@ def convert_3du(
         else:
             pointcloud += pcd
 
-        frame_id += 1
+    print("Number of frames/cameras:",uid)
 
     f_cameras.close()
 
     # Create 'pointcloud' from camear locations and lookats
     camera_locs = np.stack(camera_locs, axis=0)
     camera_lookats = np.stack(camera_lookats, axis=0)
-    camera_pcd = o3d.geometry.PointCloud(points=o3d.utils.Vector3dVector(camera_locs))
-    camera_pcd.normals = o3d.utils.Vector3dVector(camera_lookats)
+    camera_pcd = o3d.geometry.PointCloud(points=o3d.utility.Vector3dVector(camera_locs))
+    camera_pcd.normals = o3d.utility.Vector3dVector(camera_lookats)
     fname = os.path.join( os.path.dirname(output_ply), 'cameras.ply' )
     o3d.io.write_point_cloud(fname, camera_pcd, write_ascii=True)
 
     # Reduce to more useful construction
-    pointcloud = pointcloud.voxel_down_sample(voxel_size=0.025)
+    pointcloud = pointcloud.voxel_down_sample(voxel_size=voxel_size)
     o3d.io.write_point_cloud(output_ply, pointcloud, write_ascii=True)
     print("Final point cloud size:", len(pointcloud.points))
 
 
 if __name__ == '__main__':
-    video3d_file = '/home/jip/data1/begin_good_day_212/upload/2023_11_01__11_14_30/video.v3dc'
-    output_dir = "/home/jip/data1/3du_data_6/"
-    convert_3du(video3d_file, output_dir)
+    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser("3DU preprocessing")
+    parser.add_argument("video3d_file",type=str,help="Input file, should be .v3dc file")
+    parser.add_argument("output_dir",type=str,help="Output directory")
+
+    parser.add_argument("-s", "--start-frame", type=int,default=0, help="Start frame")
+    parser.add_argument("-e", "--end-frame", type=int,default=-1, help="End frame, default is last")
+    parser.add_argument("-k", "--camera-every", type=int, default=1, help="Use every k-th image")
+
+    parser.add_argument("-v", "--voxel-size", type=float, default=0.025, help="Voxel downsample size")
+
+    args = parser.parse_args()
+    convert_3du(**vars(args))

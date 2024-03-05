@@ -10,7 +10,7 @@ then
 fi
 
 python3 $CODE_DIR/train.py \
-    -s "$SOURCE_DIR/3du_data_6" \
+    -s "$SOURCE_DIR/3du_data_7" \
     --device cuda:0 \
     --iterations 30000 \
     --test-at 5000 7000 11000 14000 17000 20000 25000 30000 \
@@ -20,9 +20,10 @@ python3 $CODE_DIR/train.py \
     --lr-scales 0.005 \
     --lr-opacities 0.05 \
     --lr-colors 0.005 \
-    --oneup-sh-every 3000
-#     --model-name "3du_data_6_lpips"
-
-# python3 $CODE_DIR/render_interp.py \
-#     -s "$SOURCE_DIR/3du_data_6" \
-#     --load-checkpoint $CODE_DIR/models/3du_data_6_lpips/iter_20000/point_cloud.ply
+    --oneup-sh-every 2000 \
+    --loss-weight-mae 0.0 \
+    --loss-weight-mse 0.0 \
+    --loss-weight-dssim 0.0 \
+    --loss-weight-lpips 1.0 \
+    --model-name "3du_data_7_deblur3" \
+    --no-pbar
