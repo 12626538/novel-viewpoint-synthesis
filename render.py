@@ -111,9 +111,9 @@ if __name__ == '__main__':
                 out[:H, :W] = alpha* B + (1-alpha)* A
             else:
                 # SIDE-BY-SIDE
-                out = np.zeros((H,2*W,3),dtype=np.uint8)
-                out[:H, :W] = A
-                out[:H, -W:] = B
+                out = np.zeros((H,W,3),dtype=np.uint8)
+                out[:H, :W//2] = A[:,:W//2]
+                out[:H, -W//2:] = B[:,-W//2:]
 
             return out
 
@@ -162,3 +162,4 @@ if __name__ == '__main__':
             threads=5,
             logger=None,
         )
+        print("Written video to", os.path.join(out_dir, "render.mp4"))

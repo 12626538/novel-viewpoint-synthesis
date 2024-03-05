@@ -7,9 +7,9 @@ import torch
 from torchvision.utils import save_image
 
 from src.model.gaussians import Gaussians,RenderPackage
-from src.data import DataSet,get_rotating_dataset
+from src.data import DataSet
 from src.camera import Camera
-from src.arg import ModelParams,DataParams,PipeLineParams
+from src.arg import ModelParams,DataParams,PipeLineParams,get_args
 
 from scipy.spatial.transform import Rotation
 
@@ -97,14 +97,18 @@ def smooth_camera_path(cameras, num_poses=600, alpha:float=1) -> list[np.ndarray
     # get lookAt for every camera
     lookats = np.array([cam.R.T @ lookat for cam in cameras])
 
-    # Group take the mean of every N cameras, extrapolate additional start and end value
-    lookats = lookats.reshape(-1,30,3).mean(axis=1)
-    lookats = np.pad(lookats, ((1,1),(0,0)),'reflect',reflect_type='odd')
+    # lookats[:,1] *= 0
+    # lookats /= np.linalg.norm(lookats, axis=-1, keepdims=True)
 
+    n_combine = 2
+
+    # Group take the mean of every N cameras, extrapolate additional start and end value
+    lookats = lookats[:(lookats.shape[0]//n_combine)*n_combine].reshape(-1,n_combine,3).mean(axis=1)
+    lookats = np.pad(lookats, ((1,1),(0,0)),'reflect',reflect_type='odd')
 
     # Do the same for camera locations
     locs = np.array([cam.loc for cam in cameras])
-    locs = locs.reshape(-1,30,3).mean(axis=1)
+    locs = locs[:(locs.shape[0]//n_combine)*n_combine].reshape(-1,n_combine,3).mean(axis=1)
     locs = np.pad(locs, ((1,1),(0,0)),'reflect',reflect_type='odd')
 
     # Smooth everything out
@@ -112,7 +116,7 @@ def smooth_camera_path(cameras, num_poses=600, alpha:float=1) -> list[np.ndarray
     Rs = map(rotmat, smooth_lookats)
     smooth_locs = smooth_directions(locs, num_poses, alpha)
 
-    # Reconstruc matrices
+    # Reconstruct matrices
     poses = map(viewmat, zip(Rs,smooth_locs))
 
     return list(poses)
@@ -125,26 +129,18 @@ from moviepy.editor import VideoClip
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser("Training Novel Viewpoint Synthesis")
-    dp = DataParams(parser)
-    mp = ModelParams(parser)
-    pp = PipeLineParams(parser)
 
     parser.add_argument(
         '--fps', type=int,
         default=30,
-        help='when generating videos, use this framerate'
+        help='Framerate of output video'
     )
     parser.add_argument(
         '--glob-scale', type=float,
         default=1,
         help="Global scaling factor for the gaussians, used for rendering"
     )
-
-    args = parser.parse_args()
-
-    data_args = dp.extract(args)
-    model_args = mp.extract(args)
-    pipeline_args = pp.extract(args)
+    args, (data_args, model_args, pipeline_args) = get_args(DataParams, ModelParams, PipeLineParams, parser=parser)
 
     try:
         torch.cuda.set_device(args.device)
@@ -182,7 +178,7 @@ if __name__ == '__main__':
     print("Rendering video...")
     cameras = sorted(dataset.cameras, key=lambda cam: cam.name)
 
-    T = len(dataset.cameras)/15
+    T = 20
     num_frames = T*args.fps
 
     poses = smooth_camera_path(cameras, num_poses=num_frames)
