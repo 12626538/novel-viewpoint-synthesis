@@ -531,7 +531,7 @@ class Gaussians(nn.Module):
             scales=scales, #self.act_scales( self.scales ),
             glob_scale=glob_scale,
             quats=quats, #self.act_quats( self.quats ),
-            viewmat=camera.viewmat,
+            viewmat=camera.viewmat[:3,:],
             projmat=camera.projmat @ camera.viewmat,
             fx=camera.fx,
             fy=camera.fy,
@@ -550,7 +550,7 @@ class Gaussians(nn.Module):
             pass
 
         if self.sh_degree_max > 0:
-            viewdirs = viewdirs / torch.linalg.norm(viewdirs,dim=1,keepdim=True)
+            viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
 
             # Convert SH features to features
             colors = gsplat.spherical_harmonics(
@@ -558,18 +558,20 @@ class Gaussians(nn.Module):
                 viewdirs=viewdirs,
                 coeffs=self.colors,
             )
+
+            colors = torch.clamp(colors + 0.5, min=0.0)
         else:
-            colors = self.colors.view(self.num_points,-1)
+            colors = self.act_colors( self.colors.view(self.num_points,-1) )
 
 
         # Generate image
-        out_img,out_alpha = gsplat.rasterize_gaussians(
+        out_img, out_alpha = gsplat.rasterize_gaussians(
             xys=xys,
             depths=depths,
             radii=radii,
             conics=conics,
             num_tiles_hit=num_tiles_hit,
-            colors=self.act_colors( colors ),
+            colors=colors,
             opacity=self.act_opacities( self.opacities ) * compensation.unsqueeze(-1),
             img_height=camera.H,
             img_width=camera.W,
@@ -577,6 +579,9 @@ class Gaussians(nn.Module):
             background=bg,
             return_alpha=True,
         )
+
+        rendering = out_img.permute(2,0,1)
+        rendering = torch.clamp(rendering, max=1.0)
 
         return RenderPackage(
             rendering=out_img.permute(2,0,1),
