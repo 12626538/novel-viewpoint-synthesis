@@ -65,9 +65,9 @@ def train_report(
                 summarizer.add_scalar("Pruning/Num splats pruned by global radius",model._n_prune_scale, iter)
 
             if rendering_pkg.blur_quat is not None:
-                summarizer.add_scalar("Blurring/average weight quat", rendering_pkg.blur_quat.mean(), iter)
+                summarizer.add_scalar("Blurring/average weight quat", rendering_pkg.blur_quat[rendering_pkg.visibility_mask].mean(), iter)
             if rendering_pkg.blur_scale is not None:
-                summarizer.add_scalar("Blurring/average weight scale", rendering_pkg.blur_scale.mean(), iter)
+                summarizer.add_scalar("Blurring/average weight scale", rendering_pkg.blur_scale[rendering_pkg.visibility_mask].mean(), iter)
 
         if iter==1 or iter%100 == 0:
 
@@ -214,7 +214,7 @@ def train_loop(
     dataset_cycle = dataset.iter("train",cycle=True,shuffle=True)
     for iter in range(1,train_args.iterations+1):
 
-        model.optimizer.zero_grad()
+        model.optimizer.zero_grad(set_to_none=True)
 
         # Forward pass
         camera = next(dataset_cycle)

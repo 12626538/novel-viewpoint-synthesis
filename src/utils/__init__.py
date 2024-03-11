@@ -101,14 +101,16 @@ def qvec2rotmat(q:torch.Tensor) -> torch.Tensor:
 def get_projmat(znear:float, zfar:float, fovx:float, fovy:float, zsign:float) -> np.ndarray:
     """
     From http://www.songho.ca/opengl/gl_projectionmatrix.html
+
+    Using the simplification on the first two diagonal entries:
+    2 fx / w = 2 w / (2 w tan( fovx / 2 ) ) = 1 / tan( fovx / 2 )
+    2 fy / h = 2 h / (2 h tan( fovy / 2 ) ) = 1 / tan( fovy / 2 )
     """
     n = znear
     f = zfar
 
     a = 1 / math.tan( fovx / 2 )
     b = 1 / math.tan( fovy / 2 )
-    # a = 2 * fx / W
-    # b = 2 * fy / H
 
     return np.array([
         [  a, 0.0,          0.0,                 0.0],
@@ -118,16 +120,16 @@ def get_projmat(znear:float, zfar:float, fovx:float, fovy:float, zsign:float) ->
     ])
 
 def get_viewmat(R:np.ndarray, t:np.ndarray) -> np.ndarray:
-        """
-        Construct world-to-view matrix using rotation matrix R and position t
+    """
+    Construct world-to-view matrix using rotation matrix R and position t
 
-        R is a shape `3,3` numpy array and `t` is a shape `3,` numpy array
+    R is a shape `3,3` numpy array and `t` is a shape `3,` numpy array
 
-        Returned viewmat is shaped `4,4`
-        """
-        V = np.eye(4)
+    Returned viewmat is shaped `4,4`
+    """
+    V = np.eye(4)
 
-        V[:3,:3] = R
-        V[:3,3] = t
+    V[:3,:3] = R
+    V[:3,3] = t
 
-        return V
+    return V

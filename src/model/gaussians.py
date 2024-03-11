@@ -355,7 +355,7 @@ class Gaussians(nn.Module):
         # Initialize scales
         if scales is None:
             # scales = torch.log( torch.ones(num_points, 3, device=self.device) / (scene_extend*10) )
-            scales = torch.log( torch.ones(num_points, 3, device=self.device) * .015 )
+            scales = torch.log( torch.ones(num_points, 3, device=self.device) * .01 )
 
         # Initialize rotation
         if quats is None:
@@ -417,7 +417,7 @@ class Gaussians(nn.Module):
                 {'params': [self.colors_dc], 'lr':lr_colors, 'name': 'colors_dc'},
                 {'params': [self.colors_fc], 'lr':lr_colors/20, 'name': 'colors_fc'},
                 {'params': [self.opacities], 'lr':lr_opacities, 'name': 'opacities'},
-                {'params': self.blurrer.parameters(), 'lr':lr_blur, 'name':'deblurrer' } # TODO
+                {'params': self.blurrer.parameters(), 'lr':lr_blur, 'name':'blurrer' } # TODO
             ],
             eps=1e-15,
             lr=0.0,
@@ -772,6 +772,8 @@ class Gaussians(nn.Module):
 
         # Iterate parameter groups
         for group in self.optimizer.param_groups:
+
+            if group['name'] == 'blurrer': continue;
 
             # Get tensor to concatenate, or empty if nothing to add
             extension_tensor = dict_to_cat.get(group["name"], torch.empty(0))
