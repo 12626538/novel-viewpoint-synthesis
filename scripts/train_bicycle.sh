@@ -11,9 +11,17 @@ fi
 
 python3 $CODE_DIR/train.py \
     -s "$DATA_DIR/bicycle" \
-    --rescale 4 \
-    --device cuda:0 \
-    --test-at 5000 7000 11000 14000 17000 20000 25000 30000 \
-    --save-at 30000 \
-    --max-screen-size 200 \
-    --sh-degree 0
+    --rescale 2 \
+    --device cuda:1 \
+    --test-at 7000 30000 \
+    --save-at 7000 30000 \
+    --sh-degree 3 \
+    --densify-from 500 \
+    --densify-every 100 \
+    --reset-opacity-every 3000 \
+    --loss-weight-mae 0.8 \
+    --loss-weight-dssim 0.2 \
+    --grad-threshold 0.0002 \
+    --min-opacity 0.1 \
+    --max-screen-size 0.15 \
+    --max-density 0.05
