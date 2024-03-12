@@ -111,9 +111,9 @@ class TrainParams(ParamGroup):
         self.oneup_sh_every=2_000
 
         self.grad_threshold=1e-6
-        self.max_density=0.01
+        self.max_density=0.05
         self.min_opacity=0.005
-        self.max_screen_size=20
+        self.max_screen_size=0.15
 
         self.loss_weight_mse = 1.
         self.loss_weight_dssim = .2

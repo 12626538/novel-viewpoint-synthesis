@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from plyfile import PlyElement, PlyData
 
 from src.camera import Camera
-from src.utils import colmap_utils, qvec2rotmat, sigmoid_inv, lr_utils
+from src.utils import colmap_utils, qvec2rotmat, sigmoid_inv, lr_utils, knn_scale
 
 # TODO:
 from src.model.blur import Blurrer
@@ -128,10 +128,17 @@ class Gaussians(nn.Module):
             raise ValueError("Cannot read .ply data, vertex needs either xyz or pos_1/2/3 properties")
         kwargs['means'] = torch.from_numpy(means).to(device)
 
-        # Get scales
+        # Get scales from properties
         if properties.issuperset({"scale_1","scale_2","scale_3"}):
             scales = np.stack([vertex['scale_1'], vertex['scale_2'], vertex['scale_3']], axis=1)
             kwargs['scales'] = torch.from_numpy(scales).to(device)
+
+        # Otherwise, use K-NN to get the average distances to the nearest K neighbours and use that as scale
+        else:
+            # Get scales using KNN
+            scales = knn_scale(means)
+            # Take the log to account for exp activation function
+            kwargs['scales'] = torch.from_numpy(scales).to(device).log()
 
         # Convert rot_1/2/3/4 to quaternions
         if properties.issuperset({"rot_1","rot_2","rot_3","rot_4"}):
@@ -390,7 +397,7 @@ class Gaussians(nn.Module):
         # Initialize opacities
         if opacities is None:
             # such that sigmoid(opacity) = 0.1
-            opacities = torch.ones((num_points, 1), device=self.device) * sigmoid_inv(.8)
+            opacities = torch.ones((num_points, 1), device=self.device) * sigmoid_inv(.1)
 
         # Sanity check: make sure all parameters have same number of points
         if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities)):
@@ -447,7 +454,7 @@ class Gaussians(nn.Module):
     def init_lr_schedule(self, warmup_until=400, decay_from=15_000, decay_for=15_000):
         # Default learning rate schedule: 100 warmup iters, decay from there
         warmup = lr_utils.cosine_warmup(warmup_until, start=1e-8, end=1)
-        decay = lr_utils.log_linear(decay_for, start=1, end=1e-2)
+        decay = lr_utils.log_linear(decay_for, start=1, end=1e-3)
 
         # Set scheduler for each group
         lambdas = []
@@ -584,7 +591,7 @@ class Gaussians(nn.Module):
         rendering = torch.clamp(rendering, max=1.0)
 
         return RenderPackage(
-            rendering=out_img.permute(2,0,1),
+            rendering=rendering,
             xys=xys,
             radii=radii,
             visibility_mask=(radii > 0).squeeze(),
@@ -623,13 +630,16 @@ class Gaussians(nn.Module):
 
         # Update running average of visible Gaussians
         if xys.grad is not None:
-            self._xys_grad_accum[visibility_mask] += torch.linalg.norm(xys.grad[visibility_mask,:2], dim=1)
+            grads = xys.grad.detach().norm(dim=-1)
+            self._xys_grad_accum[visibility_mask] += grads[visibility_mask]
             self._xys_grad_norm[visibility_mask] += 1
 
+            # print(f"grad norm min {grads.min().item()} max {grads.max().item()} mean {grads.mean().item()} size {grads.shape}")
+
         # Update max radii
-        self._max_radii[visibility_mask] = torch.max(
+        self._max_radii[visibility_mask] = torch.maximum(
             self._max_radii[visibility_mask],
-            radii[visibility_mask],
+            radii.detach()[visibility_mask],
         )
 
 
@@ -678,7 +688,7 @@ class Gaussians(nn.Module):
         grads[grads.isnan()] = 0.
 
         grad_cond = grads >= grad_threshold
-        scale_cond = ( torch.max(self.act_scales(self.scales), dim=1).values > max_density ).squeeze()
+        scale_cond = ( torch.max(self.act_scales(self.scales), dim=-1).values > max_density ).squeeze()
 
         # Clone all splats with a big gradient but not too big a scale
         clone_cond =  grad_cond & ( ~scale_cond )
@@ -778,7 +788,7 @@ class Gaussians(nn.Module):
         # Iterate parameter groups
         for group in self.optimizer.param_groups:
 
-            if group['name'] == 'blurrer': continue;
+            if group['name'] not in dict_to_cat: continue;
 
             # Get tensor to concatenate, or empty if nothing to add
             extension_tensor = dict_to_cat.get(group["name"], torch.empty(0))
@@ -809,7 +819,17 @@ class Gaussians(nn.Module):
         Clip all opacities to a fixed maximum
         """
         # clamp_max_ is inplace
-        self.opacities.clamp_(max=sigmoid_inv(value))
+        self.opacities.data.clamp_(max=torch.logit(torch.tensor(value, device=self.device)))
+
+        for group in self.optimizer.param_groups:
+            if group['name'] == 'opacities':
+                param = group["params"][0]
+                param_state = self.optimizer.state[param]
+                param_state["exp_avg"] = torch.zeros_like(param_state["exp_avg"])
+                param_state["exp_avg_sq"] = torch.zeros_like(param_state["exp_avg_sq"])
+
+                del self.optimizer.state[param]
+                self.optimizer.state[param] = param_state
 
 
     def oneup_sh_degree(self):

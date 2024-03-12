@@ -69,13 +69,13 @@ def train_report(
             if rendering_pkg.blur_scale is not None:
                 summarizer.add_scalar("Blurring/average weight scale", rendering_pkg.blur_scale[rendering_pkg.visibility_mask].mean(), iter)
 
-        if iter==1 or iter%100 == 0:
+    if iter==1 or iter%100 == 0:
 
-            camera = dataset.cameras[0]
-            render = model.render(camera, bg=torch.zeros(3,device=device), blur=False).rendering
-            save_image(render,f"renders/latest_{pipeline_args.model_name}.png")
+        camera = dataset.cameras[0]
+        render = model.render(camera, bg=torch.zeros(3,device=device), blur=False).rendering
+        save_image(render,f"renders/latest_{pipeline_args.model_name}.png")
 
-    # Save image
+    # Save model
     if iter in train_args.save_at:
 
         path = os.path.join(pipeline_args.model_dir, f'iter_{iter}')
@@ -183,8 +183,8 @@ def train_loop(
     # initialize lr schedule
     model.init_lr_schedule(
         warmup_until=len(dataset),
-        decay_for=train_args.iterations//3,
-        decay_from=train_args.iterations - train_args.iterations//3
+        decay_for=train_args.iterations//3*2,
+        decay_from=train_args.iterations - train_args.iterations//3*2
     )
 
     # Set up loss
@@ -247,19 +247,19 @@ def train_loop(
                 )
 
                 if train_args.densify_from < iter and iter % train_args.densify_every == 0:
+                    screen_size = max(camera.H, camera.W)
                     model.densify(
-                        grad_threshold=train_args.grad_threshold,
-                        max_density=train_args.max_density * dataset.scene_extend,
+                        grad_threshold=train_args.grad_threshold / (.5*screen_size),
+                        max_density=train_args.max_density,
                         min_opacity=train_args.min_opacity,
                         max_world_size=0.1*dataset.scene_extend,
-                        # TODO see what works here
-                        max_screen_size=train_args.max_screen_size if iter > train_args.reset_opacity_from else None,
+                        max_screen_size=train_args.max_screen_size*screen_size if iter > train_args.reset_opacity_from else None,
                     )
 
             # Reset opacity
             if train_args.reset_opacity_from <= iter <= train_args.reset_opacity_until \
             and iter % train_args.reset_opacity_every == 0:
-                model.reset_opacity()
+                model.reset_opacity(value=train_args.min_opacity*2.0)
 
             # Increase SH degree used
             if iter%train_args.oneup_sh_every == 0:

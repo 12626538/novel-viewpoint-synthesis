@@ -4,6 +4,36 @@ import math
 from PIL import Image
 from torchvision import transforms
 
+def knn_scale(x:np.ndarray, k:int=3):
+    """
+    Use K-Nearest Neighbours to estimate the scale of a point.
+
+    The scale of a point in `x` is taken as the average distance to the nearest
+    `k` neighbours of that point (excluding itself).
+
+    Requires sklearn package.
+
+    Parameters:
+    - `x:np.ndarray` of shape `N,D` where `N` is number of points and `D` is
+        dimensionality of the data.
+    - `k:int=3` number of neighbours to consider
+
+    Returnes:
+    - `scales:np.ndarray` of shape `N,D` where each row has the same value
+    """
+    from sklearn.neighbors import NearestNeighbors
+
+    D = x.shape[-1]
+    nn_model = NearestNeighbors(n_neighbors=k + 1, algorithm="auto", metric="euclidean").fit(x)
+
+    # Find the k-nearest neighbors
+    distances, _ = nn_model.kneighbors(x)
+
+    # Exclude the point itself from the result and take the average distance
+    distances = distances[:, 1:].mean(dim=-1, keepdims=True)
+
+    return np.tile(distances, (1,D))
+
 def sigmoid_inv(x):
     return np.log(x/(1-x))
 
