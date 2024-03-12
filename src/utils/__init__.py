@@ -30,7 +30,7 @@ def knn_scale(x:np.ndarray, k:int=3):
     distances, _ = nn_model.kneighbors(x)
 
     # Exclude the point itself from the result and take the average distance
-    distances = distances[:, 1:].mean(dim=-1, keepdims=True)
+    distances = distances[:, 1:].mean(axis=-1, keepdims=True)
 
     return np.tile(distances, (1,D))
 

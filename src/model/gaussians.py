@@ -454,7 +454,7 @@ class Gaussians(nn.Module):
     def init_lr_schedule(self, warmup_until=400, decay_from=15_000, decay_for=15_000):
         # Default learning rate schedule: 100 warmup iters, decay from there
         warmup = lr_utils.cosine_warmup(warmup_until, start=1e-8, end=1)
-        decay = lr_utils.log_linear(decay_for, start=1, end=1e-3)
+        decay = lr_utils.log_linear(decay_for, start=1, end=1e-2)
 
         # Set scheduler for each group
         lambdas = []

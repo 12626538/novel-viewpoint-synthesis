@@ -1,3 +1,5 @@
+
+
 from dataclasses import dataclass,replace
 import torch
 from torch import nn
@@ -49,7 +51,7 @@ def inv_sqrtm(mat:torch.Tensor, eps=torch.finfo(torch.float32).tiny) -> torch.Te
     return (eigvecs * scaling) @ eigvecs.moveaxis(-2, -1)
 
 @dataclass
-class Camera:
+class DCCamera:
     """
     Simple dataclass to hold properties used to project Gaussians
     """
@@ -66,8 +68,13 @@ class Camera:
     # Misc
     H:int
     W:int
+    gt_image:torch.Tensor
     znear:float=0.01
     zfar:float=100.0
+
+    @property
+    def loc(self):
+        return self.world_position().detach().cpu().numpy()
 
 
     def world_position(self)->torch.Tensor:
@@ -155,7 +162,7 @@ def flatten(residuals:dict[str,torch.Tensor]):
 
 @dataclass
 class CameraParameterization:
-    camera:Camera
+    camera:DCCamera
     latent:nn.Parameter
     unflatten_fn:Callable[[nn.Parameter], dict[str, torch.Tensor]]
     aux:Any=None
@@ -166,10 +173,10 @@ class CameraResidual():
     Abstract class for camera residual transformations
     """
     use_residual:bool=True
-    use_precondition:bool=True
+    use_precondition:bool=False
 
     @staticmethod
-    def create_residuals(camera:Camera) -> tuple[dict[str,torch.Tensor], Any]:
+    def create_residuals(camera:DCCamera) -> tuple[dict[str,torch.Tensor], Any]:
         """
         Initialize residuals from Camera instance
         """
@@ -177,7 +184,7 @@ class CameraResidual():
 
 
     @staticmethod
-    def transform(camera:Camera, residuals:dict[str,torch.Tensor], aux:Any) -> Camera:
+    def transform(camera:DCCamera, residuals:dict[str,torch.Tensor], aux:Any) -> DCCamera:
         """
         Get transformed Camera instance from base Camera and unflattened residuals
         """
@@ -185,7 +192,7 @@ class CameraResidual():
 
 
     @classmethod
-    def parameterize(cls, camera:Camera) -> CameraParameterization:
+    def parameterize(cls, camera:DCCamera) -> CameraParameterization:
         residuals, aux = cls.create_residuals(camera)
         latent, unflatten_fn = flatten(residuals)
 
@@ -198,7 +205,7 @@ class CameraResidual():
 
 
     @classmethod
-    def get_camera(cls, param:CameraParameterization) -> Camera:
+    def get_camera(cls, param:CameraParameterization) -> DCCamera:
         """
         Given parameterization, get transformed Camera instance
 
@@ -262,20 +269,22 @@ class CameraResidual():
         return inv_sqrtm(sigma).detach().requires_grad_(False)
 
 
-class CameraIntrinsics(CameraResidual):
-    def create_residuals(camera:Camera) -> tuple[dict[str,torch.Tensor], Any]:
+class UnnamedCameraType(CameraResidual):
+    def create_residuals(camera:DCCamera) -> tuple[dict[str,torch.Tensor], Any]:
         device = camera.viewmat.device
         residuals = {
             "f": torch.zeros(1, device=device),
             "cx": torch.zeros(1, device=device),
             "cy": torch.zeros(1, device=device),
+            "t": torch.zeros(3, device=device),
+            "quat": torch.zeros(4, device=device),
         }
 
         aux = None
 
         return residuals, aux
 
-    def transform(camera: Camera, residuals: dict[str, torch.Tensor], aux:Any) -> Camera:
+    def transform(camera: DCCamera, residuals: dict[str, torch.Tensor], aux:Any) -> DCCamera:
 
         fx = camera.fx * torch.exp( residuals['f'] )
         fy = camera.fy * torch.exp( residuals['f'] )
@@ -288,9 +297,9 @@ class CameraIntrinsics(CameraResidual):
             n=camera.znear,f=camera.zfar
         )
 
-        return replace(
-            camera,
-            fx=fx,fy=fy,
-            cx=cx,cy=cy,
-            projmat=projmat,
+        return DCCamera(
+            fx=fx, fy=fy, cx=cx, cy=cy,
+            projmat=projmat, viewmat=camera.viewmat,
+            H=camera.H, W=camera.W,
+            gt_image=camera.gt_image, znear=camera.znear, zfar=camera.zfar
         )

@@ -110,7 +110,7 @@ class LPIPS(nn.Module):
 LOSSES:dict[str,type[nn.Module]] = {
     'mae': L1Loss,
     'mse': MSELoss,
-    'lpips': LPIPS,
+    # 'lpips': LPIPS,
     'dssim': DSSIM,
 }
 loss_fn = Callable[[torch.Tensor,torch.Tensor], tuple[torch.Tensor, dict[str,float]]]

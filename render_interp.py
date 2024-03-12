@@ -97,10 +97,10 @@ def smooth_camera_path(cameras, num_poses=600, alpha:float=1) -> list[np.ndarray
     # get lookAt for every camera
     lookats = np.array([cam.R.T @ lookat for cam in cameras])
 
-    # lookats[:,1] *= 0
-    # lookats /= np.linalg.norm(lookats, axis=-1, keepdims=True)
+    lookats[:,1] /= 2
+    lookats /= np.linalg.norm(lookats, axis=-1, keepdims=True)
 
-    n_combine = 2
+    n_combine = 10
 
     # Group take the mean of every N cameras, extrapolate additional start and end value
     lookats = lookats[:(lookats.shape[0]//n_combine)*n_combine].reshape(-1,n_combine,3).mean(axis=1)
@@ -175,10 +175,10 @@ if __name__ == '__main__':
     else:
         dataset = DataSet.from_colmap(device=args.device, **vars(data_args))
 
-    print("Rendering video...")
     cameras = sorted(dataset.cameras, key=lambda cam: cam.name)
 
-    T = 20
+    # Original data is 15 fps, but only every second frame is taken
+    T = len(dataset) / 15 * 2
     num_frames = T*args.fps
 
     poses = smooth_camera_path(cameras, num_poses=num_frames)
@@ -205,10 +205,12 @@ if __name__ == '__main__':
 
         return A
 
+    print(f"Rendering video ({round(T*args.fps)} frames)...")
     clip = VideoClip(make_frame, duration=T)
     clip.write_videofile(
         os.path.join(out_dir, "smoothed_reconstruction.mp4"),
         fps=args.fps,
         threads=5,
+        logger=None,
     )
     print("Written video to", os.path.join(out_dir, "smoothed_reconstruction.mp4"))

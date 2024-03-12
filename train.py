@@ -183,8 +183,8 @@ def train_loop(
     # initialize lr schedule
     model.init_lr_schedule(
         warmup_until=len(dataset),
-        decay_for=train_args.iterations//3*2,
-        decay_from=train_args.iterations - train_args.iterations//3*2
+        decay_for=train_args.iterations//3,
+        decay_from=train_args.iterations - train_args.iterations//3
     )
 
     # Set up loss
@@ -331,7 +331,7 @@ if __name__ == '__main__':
 
     # Initialize 3DU pointcloud
     elif "3du_data" in data_args.source_path:
-        fname = os.path.join(data_args.source_path, "pointcloud.ply")
+        fname = os.path.join(data_args.source_path, "point_cloud.ply")
 
         print(f"Loading .ply model from {fname}")
         model = Gaussians.from_ply(
