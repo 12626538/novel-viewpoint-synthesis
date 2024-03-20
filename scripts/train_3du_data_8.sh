@@ -15,11 +15,13 @@ python3 $CODE_DIR/train.py \
     --device cuda:1 \
     --test-at 5000 7000 11000 14000 17000 20000 25000 30000 \
     --save-at 7000 15000 22000 30000 \
+    --lr-scales 0.00125 \
     --densify-from 500 \
     --densify-every 100 \
     --grad-threshold 0.0001 \
     --min-opacity 0.1 \
-    --max-screen-size 0.15 \
+    --max-screen-size 0.10 \
     --max-density 0.05 \
     --loss-weight-mae 0.8 \
-    --loss-weight-dssim 0.2
+    --loss-weight-dssim 0.2 \
+    --block-width 14
