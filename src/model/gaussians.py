@@ -12,8 +12,6 @@ from plyfile import PlyElement, PlyData
 from src.camera import Camera
 from src.utils import colmap_utils, qvec2rotmat, sigmoid_inv, lr_utils, knn_scale
 
-# TODO:
-from src.model.blur import Blurrer
 
 # An instance of this is returned by the `Gaussians.render` method
 @dataclass
@@ -497,7 +495,6 @@ class Gaussians(nn.Module):
             camera:Camera,
             glob_scale:float=1.0,
             bg:torch.Tensor=None,
-            blur:bool=False # TODO
         ) -> RenderPackage:
         """
         Render a Camera instance using gaussian splatting
