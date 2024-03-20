@@ -10,7 +10,7 @@ then
 fi
 
 python3 $CODE_DIR/train.py \
-    -s "$DATA_DIR/bonsai" \
+    -s "$DATA_DIR/bicycle" \
     --rescale 2 \
     --device cuda:1 \
     --test-at 7000 11000 14000 17000 20000 25000 30000 \
