@@ -64,15 +64,10 @@ def train_report(
                 summarizer.add_scalar("Pruning/Num splats pruned by view radius",model._n_prune_radii, iter)
                 summarizer.add_scalar("Pruning/Num splats pruned by global radius",model._n_prune_scale, iter)
 
-            if rendering_pkg.blur_quat is not None:
-                summarizer.add_scalar("Blurring/average weight quat", rendering_pkg.blur_quat[rendering_pkg.visibility_mask].mean(), iter)
-            if rendering_pkg.blur_scale is not None:
-                summarizer.add_scalar("Blurring/average weight scale", rendering_pkg.blur_scale[rendering_pkg.visibility_mask].mean(), iter)
-
     if iter==1 or iter%100 == 0:
 
         camera = dataset.cameras[0]
-        render = model.render(camera, bg=torch.zeros(3,device=device), blur=False).rendering
+        render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
         save_image(render,f"renders/latest_{pipeline_args.model_name}.png")
 
     # Save model
@@ -134,7 +129,7 @@ def train_report(
                 if i%eval_every != 0:
                     continue
 
-                pkg = model.render(cam, bg=bg, blur=False)
+                pkg = model.render(cam, bg=bg)
 
                 # Get result for each metric to test on
                 for metric,metric_func in metric_funcs.items():
@@ -218,7 +213,7 @@ def train_loop(
 
         # Forward pass
         camera = next(dataset_cycle)
-        rendering_pkg = model.render(camera, bg=background, blur=pipeline_args.do_blur)
+        rendering_pkg = model.render(camera, bg=background)
 
         loss,loss_pkg = loss_fn(rendering_pkg.rendering, camera.gt_image)
 
@@ -348,23 +343,12 @@ if __name__ == '__main__':
             **vars(model_args)
         )
     else:
-        raise ValueError("Specify initialization method!")
         # Random initialization
         print("Initializing model randomly with {} points in a bounding box of size {:.1f}".format(
             model_args.num_points,
             dataset.scene_extend
         ))
         model = Gaussians(
-            device=args.device,
-            scene_extend=dataset.scene_extend,
-            **vars(model_args),
-        )
-
-        # Initialize from COLMAP `points3D.txt` file
-        fname = os.path.join(args.source_path,'sparse','0','points3D.txt')
-        print(f"Initializing model from {fname}")
-        model = Gaussians.from_colmap(
-            path_to_points3D_file=fname,
             device=args.device,
             scene_extend=dataset.scene_extend,
             **vars(model_args),

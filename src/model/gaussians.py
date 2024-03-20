@@ -27,12 +27,11 @@ class RenderPackage:
     radii:torch.Tensor # Shape N
     visibility_mask:torch.BoolTensor # Shape N
     alpha:torch.Tensor # Shape H,W
-    blur_quat:torch.Tensor # If `blur=True` shape N,4, else None
-    blur_scale:torch.Tensor # If `blur=True` shape N,3, else None
 
 class Gaussians(nn.Module):
-    BLOCK_WIDTH = 16
-
+    """
+    TODO: write a motivational introduction about 3DGS
+    """
 
     @classmethod
     def from_colmap(
@@ -52,16 +51,20 @@ class Gaussians(nn.Module):
         means, colors = colmap_utils.read_points3D(path_to_points3D_file)
         means = torch.from_numpy(means).to(device=device)
 
-        # Account for sigmoid activation function for the colors
-        # Clip from [0,1] to (0,1) to prevent division by zero errors
-        colors = sigmoid_inv(colors.clip(1e-7, 1-1e-7))
-
         if sh_degree == 0:
+            # Account for sigmoid activation function for the colors
+            # Clip from [0,1] to (0,1) to prevent division by zero errors
+            colors = sigmoid_inv(colors.clip(1e-7, 1-1e-7))
             c = colors.shape[-1]
             colors = torch.from_numpy(colors.reshape(-1,1,c)).to(device=device, dtype=torch.float32)
         else:
             n,c = colors.shape
             d = (sh_degree+1)**2
+
+            # Account for SH band 0
+            # C0 from https://github.com/nerfstudio-project/gsplat/blob/main/gsplat/cuda/csrc/sh.cuh
+            colors = (colors - 0.5) / 0.28209479177387814
+
             _colors = np.zeros((n,d,c))
             _colors[:,0] = colors
             colors = torch.from_numpy(_colors).to(device=device, dtype=torch.float32)
@@ -153,7 +156,6 @@ class Gaussians(nn.Module):
         colors = None
         if properties.issuperset({'red','green','blue'}):
             colors = np.stack([vertex['red'], vertex['green'], vertex['blue']], axis=1, dtype=np.float32) / 255.
-            colors = sigmoid_inv( colors.clip(1e-7, 1-1e-7) )
 
             kwargs['sh_degree'] = kwargs.get('sh_degree',2)
             D = (kwargs['sh_degree']+1)**2
@@ -161,7 +163,10 @@ class Gaussians(nn.Module):
             # If sh_degree > 0, account for 0-band SH color
             if D>1:
                 # C0 from https://github.com/nerfstudio-project/gsplat/blob/main/gsplat/cuda/csrc/sh.cuh
-                colors /= 0.28209479177387814
+                colors = (colors - 0.5) / 0.28209479177387814
+            else:
+                # Otherwise, account for sigmoid activation
+                colors = sigmoid_inv( colors.clip(1e-7, 1-1e-7) )
 
             features = np.zeros((colors.shape[0],D, colors.shape[1]))
             features[:,0,:] = colors
@@ -289,13 +294,13 @@ class Gaussians(nn.Module):
         act_quats=F.normalize,
         act_colors=torch.sigmoid,
         act_opacities=torch.sigmoid,
+        block_width:int=16,
         # The following are set by src/args.py:TrainParams
         lr_positions:float=0.00016,
         lr_scales:float=0.005,
         lr_quats:float=0.001,
         lr_colors:float=0.0025,
         lr_opacities:float=0.05,
-        lr_blur:float=0.001,
     ):
         """
         Set up Gaussians instance
@@ -361,11 +366,11 @@ class Gaussians(nn.Module):
 
         # Initialize scales
         if scales is None:
-            # scales = torch.log( torch.ones(num_points, 3, device=self.device) / (scene_extend*10) )
-            scales = torch.log( torch.ones(num_points, 3, device=self.device) * .01 )
+            scales = torch.tensor( knn_scale(means.detach().cpu().numpy()), device=self.device, dtype=torch.float32 )
 
         # Initialize rotation
         if quats is None:
+            # From: https://github.com/nerfstudio-project/gsplat/blob/main/examples/simple_trainer.py
             u = torch.rand(num_points, 1, device=self.device)
             v = torch.rand(num_points, 1, device=self.device)
             w = torch.rand(num_points, 1, device=self.device)
@@ -397,7 +402,7 @@ class Gaussians(nn.Module):
         # Initialize opacities
         if opacities is None:
             # such that sigmoid(opacity) = 0.1
-            opacities = torch.ones((num_points, 1), device=self.device) * sigmoid_inv(.1)
+            opacities = torch.logit( torch.ones((num_points, 1), device=self.device) * 0.1 )
 
         # Sanity check: make sure all parameters have same number of points
         if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities)):
@@ -411,10 +416,6 @@ class Gaussians(nn.Module):
         self.colors_fc = nn.Parameter(colors[:,1:,:].float())
         self.opacities = nn.Parameter(opacities.float())
 
-        # TODO: tidy this up
-        self.blurrer = Blurrer()
-        self.blurrer.to(device=self.device)
-
         # Set up optimizer
         self.optimizer = optim.Adam(
             [
@@ -424,7 +425,6 @@ class Gaussians(nn.Module):
                 {'params': [self.colors_dc], 'lr':lr_colors, 'name': 'colors_dc'},
                 {'params': [self.colors_fc], 'lr':lr_colors/20, 'name': 'colors_fc'},
                 {'params': [self.opacities], 'lr':lr_opacities, 'name': 'opacities'},
-                {'params': self.blurrer.parameters(), 'lr':lr_blur, 'name':'blurrer' } # TODO
             ],
             eps=1e-15,
             lr=0.0,
@@ -432,6 +432,9 @@ class Gaussians(nn.Module):
 
         # Can be optionally set by `init_scheduler`
         self.lr_schedule = None
+
+        # Tile size when rendering
+        self.block_width = block_width
 
         # Set activation functions
         self.act_scales = act_scales
@@ -521,23 +524,12 @@ class Gaussians(nn.Module):
         if bg is None:
             bg = torch.rand(3, device=self.device)
 
-        viewdirs = self.means.detach() - torch.from_numpy(camera.loc).to(device=self.device, dtype=torch.float32).unsqueeze(0)
-
-        quats = self.act_quats( self.quats )
-        scales = self.act_scales( self.scales )
-        res_quat, res_scales = None, None
-        # TODO
-        if blur:
-            res_quat, res_scales = self.blurrer(self.means, quats, scales, viewdirs)
-            quats = quats * res_quat
-            scales = scales * res_scales
-
         # Project Gaussians from 3D to 2D
         xys, depths, radii, conics, compensation, num_tiles_hit, cov3d = gsplat.project_gaussians(
             means3d=self.means,
-            scales=scales, #self.act_scales( self.scales ),
+            scales=self.act_scales( self.scales ),
             glob_scale=glob_scale,
-            quats=quats, #self.act_quats( self.quats ),
+            quats=self.act_quats( self.quats ),
             viewmat=camera.viewmat[:3,:],
             projmat=camera.projmat @ camera.viewmat,
             fx=camera.fx,
@@ -546,7 +538,7 @@ class Gaussians(nn.Module):
             cy=camera.cy,
             img_width=camera.W,
             img_height=camera.H,
-            block_width=self.BLOCK_WIDTH,
+            block_width=self.block_width,
             clip_thresh=camera.znear,
         )
 
@@ -557,6 +549,7 @@ class Gaussians(nn.Module):
             pass
 
         if self.sh_degree_max > 0:
+            viewdirs = self.means.detach() - torch.from_numpy(camera.loc).to(device=self.device, dtype=torch.float32).unsqueeze(0)
             viewdirs = viewdirs / viewdirs.norm(dim=-1, keepdim=True)
 
             # Convert SH features to features
@@ -582,13 +575,13 @@ class Gaussians(nn.Module):
             opacity=self.act_opacities( self.opacities ) * compensation.unsqueeze(-1),
             img_height=camera.H,
             img_width=camera.W,
-            block_width=self.BLOCK_WIDTH,
+            block_width=self.block_width,
             background=bg,
             return_alpha=True,
         )
 
         rendering = out_img.permute(2,0,1)
-        rendering = torch.clamp(rendering, max=1.0)
+        rendering = torch.clamp(rendering, min=0.0, max=1.0)
 
         return RenderPackage(
             rendering=rendering,
@@ -596,8 +589,6 @@ class Gaussians(nn.Module):
             radii=radii,
             visibility_mask=(radii > 0).squeeze(),
             alpha=out_alpha,
-            blur_quat=res_quat,
-            blur_scale=res_scales
         )
     forward=render
 
@@ -821,6 +812,7 @@ class Gaussians(nn.Module):
         # clamp_max_ is inplace
         self.opacities.data.clamp_(max=torch.logit(torch.tensor(value, device=self.device)))
 
+        # Remove state
         for group in self.optimizer.param_groups:
             if group['name'] == 'opacities':
                 param = group["params"][0]

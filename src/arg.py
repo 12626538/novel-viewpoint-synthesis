@@ -66,12 +66,15 @@ class ModelParams(ParamGroup):
 
         self.sh_degree = 2
 
+        # Learning rates
         self.lr_positions = 0.00016
         self.lr_scales    = 0.005
         self.lr_quats     = 0.001
         self.lr_colors    = 0.0025
         self.lr_opacities = 0.05
-        self.lr_blur      = 0.001
+
+        # Tile size for gsplat.RasterizeGaussians
+        self.block_width = 16
         super().__init__(*arg,**kwarg)
 
 
@@ -115,10 +118,10 @@ class TrainParams(ParamGroup):
         self.min_opacity=0.005
         self.max_screen_size=0.15
 
-        self.loss_weight_mse = 1.
-        self.loss_weight_dssim = .2
-        self.loss_weight_lpips = .1
-        self.loss_weight_mae = 0.
+        self.loss_weight_mse = 0.0
+        self.loss_weight_dssim = 0.2
+        self.loss_weight_lpips = 0.0
+        self.loss_weight_mae = 0.8
 
         super().__init__(*arg,**kwarg)
 
@@ -148,7 +151,6 @@ class PipeLineParams(ParamGroup):
         self.white_background = False
 
         self.no_pbar = False
-        self.do_blur = False
         super().__init__(*arg,**kwarg)
 
     def extract(self,args):
