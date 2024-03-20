@@ -62,13 +62,29 @@ if __name__ == '__main__':
     parser.add_argument(
         'method',
         default="images",
-        choices=['images','video', 'smoothvideo', 'alphablend', 'rotation'],
+        choices=['images','video', 'blendvideo', 'smoothvideo', 'rotation'],
         help='How to render images, default is all views as seperate images'
     )
     parser.add_argument(
+        "--out-dir", type=str,
+        default=None,
+        help="Where to output images to, default is `renders` folder inside checkpoint directory"
+    )
+    parser.add_argument(
+        '--background',
+        default="black",
+        choices=['black','white', 'random'],
+        help='Background of rendered images'
+    )
+    parser.add_argument(
         '--fps', type=int,
-        default=48,
+        default=None,
         help='when generating videos, use this framerate'
+    )
+    parser.add_argument(
+        '--dataset-fps', type=int,
+        default=15,
+        help='Framerate used by dataset, used for smoothing'
     )
     parser.add_argument(
         '--T', type=float,
@@ -81,15 +97,19 @@ if __name__ == '__main__':
         help="Global scaling factor for the gaussians, used for rendering"
     )
     parser.add_argument(
-        '--background',
-        default="black",
-        choices=['black','white', 'random'],
-        help='Background of rendered images'
+        '--center-point', type=float, nargs=3,
+        default=[0,0,0],
+        help="For 'rotation' method, rotate around this point"
     )
     parser.add_argument(
-        "--out-dir", type="str",
-        default=None,
-        help="Where to output images to, default is `renders` folder inside checkpoint directory"
+        '--rotation-axis', type=float, nargs=3,
+        default=[0,1,0],
+        help="For 'rotation' method, rotate around this axis"
+    )
+    parser.add_argument(
+        '--rotation-distance', type=float,
+        default=5,
+        help="For 'rotation' method, rotate this distance from center point"
     )
 
     args,(data_args,model_args,pipeline_args) = get_args(
@@ -137,7 +157,7 @@ if __name__ == '__main__':
 
     # Simple render images and save to out_dir
     if args.method == "images":
-        dataset = get_dataset(args,data_args)
+        dataset = get_dataset(args, data_args)
         render_images(
             cameras=dataset.cameras,
             model=model,
@@ -148,68 +168,126 @@ if __name__ == '__main__':
 
     # Render images as video
     elif args.method == "video":
-
-    exit()
-
-    if args.reconstruct_video:
-
-        # 3DU datasets are from intrinsics and extrinsics
-        if "3du" in data_args.source_path:
-            dataset = DataSet.from_3du(device=args.device, **vars(data_args))
-
-        # Paper datasets are COLMAP formatted
-        else:
-            dataset = DataSet.from_colmap(device=args.device, **vars(data_args))
-
-        print("Rendering video...")
+        dataset = get_dataset(args, data_args)
 
         cameras = sorted(dataset.cameras, key=lambda cam: cam.name)
-        T = len(cameras)/args.fps
+        T = len(cameras)/args.dataset_fps
         H = min(cam.H for cam in cameras)
         W = min(cam.W for cam in cameras)
 
-        def make_frame(t):
-
+        def render_frame(t):
             # Get camera at current timestep
             i = round((t / T)*(len(cameras)-1))
             camera = cameras[i]
 
-            A = (camera.gt_image.detach().permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)[:H,:W]
+            # Ground truth image
+            if camera.gt_image is not None:
+                A = (camera.gt_image.detach().permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)[:H,:W]
+            else:
+                A = np.zeros((H,W,3))
 
             # Render camera
             pkg = model.render(camera, bg=torch.zeros(3,device=args.device), glob_scale=args.glob_scale)
             render = pkg.rendering.permute(1,2,0)
             B = (render.detach().cpu().numpy()*255).astype(np.uint8)[:H,:W]
 
-            if args.alpha_blend:
-                # ALPHA BLENDING
-                alpha = pkg.alpha.detach().cpu().numpy()[:H,:W,None]
-                out = np.zeros((H,W,3),dtype=np.uint8)
-                out[:H, :W] = alpha* B + (1-alpha)* A
-            else:
-                # SIDE-BY-SIDE
-                out = np.zeros((H,W,3),dtype=np.uint8)
-
-                out[:H, :W] = B[:,:W//2]
-                out[:H, -W//2:] = B[:,-W//2:]
+            # Stack horizontally
+            out = np.hstack((A,B), dtype=np.uint8)
 
             return out
 
-        clip = VideoClip(make_frame, duration=T)
-        clip.write_videofile(
-            os.path.join(out_dir, "reconstruction.mp4"),
-            fps=args.fps,
-            threads=5,
-            logger=None,
+        render_video(
+            render_frame=render_frame,
+            fname=os.path.join(args.out_dir, "reconstruction.mp4"),
+            duration=T,
+            fps=args.dataset_fps if args.fps is None else args.fps
         )
-        print("Written video to", os.path.join(out_dir, "reconstruction.mp4"))
 
-    else:
+    # Render images as video, layer them using the alpha value of the rendering
+    elif args.method == "blendvideo":
+        dataset = get_dataset(args, data_args)
+
+        cameras = sorted(dataset.cameras, key=lambda cam: cam.name)
+        T = len(cameras)/args.dataset_fps
+        H = min(cam.H for cam in cameras)
+        W = min(cam.W for cam in cameras)
+
+        def render_frame(t):
+            # Get camera at current timestep
+            i = round((t / T)*(len(cameras)-1))
+            camera = cameras[i]
+
+            # Ground truth image
+            if camera.gt_image is not None:
+                A = (camera.gt_image.detach().permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)[:H,:W]
+            else:
+                A = np.zeros((H,W,3))
+
+            # Render camera
+            pkg = model.render(camera, bg=torch.zeros(3,device=args.device), glob_scale=args.glob_scale)
+            render = pkg.rendering.permute(1,2,0)
+            B = (render.detach().cpu().numpy()*255).astype(np.uint8)[:H,:W]
+
+            alpha = pkg.alpha.detach().cpu().numpy().reshape(H,W,1)
+
+            out = alpha* B + (1-alpha)* A
+
+            return out
+
+        render_video(
+            render_frame=render_frame,
+            fname=os.path.join(args.out_dir, "reconstruction_blended.mp4"),
+            duration=T,
+            fps=args.dataset_fps if args.fps is None else args.fps
+        )
+
+    # Render images as video
+    elif args.method == "smoothvideo":
+
+        from src.utils.smoothing_utils import *
+
+        dataset = get_dataset(args, data_args)
+
+        fps = args.dataset_fps if args.fps is None else args.fps
+        num_frames = args.T * fps
+
+        poses = smooth_camera_path(dataset.cameras, num_poses=num_frames)
+        num_poses = len(poses)
+
+        def render_frame(t):
+            # Get pose at current timestep
+            i = round((t / args.T)*(num_poses-1))
+            pos = poses[i]
+
+            camera = Camera(
+                R=pos[:3,:3],
+                t=pos[:3,3],
+                znear=1e-3,
+                fovx=np.deg2rad(66),
+                fovy=np.deg2rad(37),
+                H=1080, W=1920
+            )
+
+            render = model.render(camera, bg=torch.zeros(3,device=args.device), glob_scale=args.glob_scale).rendering.permute(1,2,0)
+            out = (render.detach().cpu().numpy() * 255).astype(np.uint8)
+
+            return out
+
+        render_video(
+            render_frame=render_frame,
+            fname=os.path.join(args.out_dir, "reconstruction_smooth.mp4"),
+            duration=args.T,
+            fps=fps
+        )
+
+    # Render rotating view
+    elif args.method == "rotation":
+        rotax = np.array(args.rotation_axis)
         dataset = get_rotating_dataset(
-            distance_from_center=5,
-            center_point=np.array([0,0,0]),
-            rotation_axis=np.array([0,1,1])/np.sqrt(2),
-            num_cameras=240
+            distance_from_center=args.rotation_distance,
+            center_point=np.array(args.center_point),
+            rotation_axis=rotax / np.linalg.norm(rotax),
+            num_cameras=args.T * args.fps
         )
 
         print("Rendering video...")
@@ -220,7 +298,7 @@ if __name__ == '__main__':
         H = min(cam.H for cam in cameras)
         W = min(cam.W for cam in cameras)
 
-        def make_frame(t):
+        def render_frame(t):
             out = np.zeros((H,W,3),dtype=np.uint8)
 
             # Get camera at current timestep
@@ -234,11 +312,9 @@ if __name__ == '__main__':
             out[:H, :W] = A
             return out
 
-        clip = VideoClip(make_frame, duration=T)
-        clip.write_videofile(
-            os.path.join(out_dir, "render.mp4"),
-            fps=args.fps,
-            threads=5,
-            logger=None,
+        render_video(
+            render_frame=render_frame,
+            fname=os.path.join(args.out_dir, "rotation.mp4"),
+            duration=args.T,
+            fps=args.fps
         )
-        print("Written video to", os.path.join(out_dir, "render.mp4"))
