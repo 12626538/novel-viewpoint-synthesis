@@ -1,6 +1,6 @@
-renders/
-models/
-logs/
+/renders
+/models
+/logs
 nohup.out
 *.code-workspace
 *.png
