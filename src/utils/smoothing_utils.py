@@ -99,8 +99,9 @@ def smooth_camera_path(cameras, num_poses=600, alpha:float=1) -> list[np.ndarray
     n_combine = 10
 
     # Group take the mean of every N cameras, extrapolate additional start and end value
-    lookats = lookats[:(lookats.shape[0]//n_combine)*n_combine].reshape(-1,n_combine,3).mean(axis=1)
-    lookats = np.pad(lookats, ((1,1),(0,0)),'reflect',reflect_type='odd')
+    grouped_lookats = lookats[:(lookats.shape[0]//n_combine)*n_combine].reshape(-1,n_combine,3).mean(axis=1)
+    grouped_lookats = np.vstack((lookats[:1],grouped_lookats,lookats[-1:]))
+    grouped_lookats = np.pad(grouped_lookats, ((1,1),(0,0)),'reflect',reflect_type='odd')
 
     # Do the same for camera locations
     locs = np.array([cam.loc for cam in cameras])
@@ -108,7 +109,7 @@ def smooth_camera_path(cameras, num_poses=600, alpha:float=1) -> list[np.ndarray
     locs = np.pad(locs, ((1,1),(0,0)),'reflect',reflect_type='odd')
 
     # Smooth everything out
-    smooth_lookats = smooth_directions(lookats, num_poses, alpha)
+    smooth_lookats = smooth_directions(grouped_lookats, num_poses, alpha)
     Rs = map(rotmat_from_lookat, smooth_lookats)
     smooth_locs = smooth_directions(locs, num_poses, alpha)
 

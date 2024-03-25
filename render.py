@@ -287,14 +287,12 @@ if __name__ == '__main__':
             distance_from_center=args.rotation_distance,
             center_point=np.array(args.center_point),
             rotation_axis=rotax / np.linalg.norm(rotax),
-            num_cameras=args.T * args.fps
+            num_cameras=round(args.T * args.fps),
         )
 
         print("Rendering video...")
 
-
         cameras = sorted(dataset.cameras, key=lambda cam: cam.name)
-        T = len(cameras)/args.fps
         H = min(cam.H for cam in cameras)
         W = min(cam.W for cam in cameras)
 
@@ -302,7 +300,7 @@ if __name__ == '__main__':
             out = np.zeros((H,W,3),dtype=np.uint8)
 
             # Get camera at current timestep
-            i = round((t / T)*(len(cameras)-1))
+            i = round((t / args.T)*(len(cameras)-1))
             camera = cameras[i]
 
             # Render camera

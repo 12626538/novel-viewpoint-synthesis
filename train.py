@@ -116,9 +116,9 @@ def train_report(
                 metric:[] for metric in metric_funcs
             }
 
-            # On last iter, also save to disk
+            # If this is a save iter, also save renders to disk
             out_dir = None
-            if iter == train_args.iterations:
+            if iter in train_args.save_at:
                 out_dir = os.path.join(pipeline_args.log_dir, f"iter_{iter}", "renders", partition)
                 os.makedirs(out_dir, exist_ok=True)
 
@@ -143,10 +143,6 @@ def train_report(
 
                     # Add metric
                     stats_lsts[metric].append( stat )
-
-                # Save rendered images
-                if summarizer is not None:
-                    summarizer.add_images(f"{partition}_renders/{cam.name}", torch.stack((pkg.rendering, cam.gt_image)), iter )
 
                 if out_dir is not None:
                     save_image(
