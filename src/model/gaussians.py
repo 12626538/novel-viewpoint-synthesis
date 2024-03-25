@@ -24,7 +24,9 @@ class RenderPackage:
     xys:torch.Tensor # Shape N,3
     radii:torch.Tensor # Shape N
     visibility_mask:torch.BoolTensor # Shape N
-    alpha:torch.Tensor # Shape H,W
+    alpha:torch.Tensor # Optional, Shape H,W
+    depth:torch.Tensor # Optional, Shape H,W
+    additional_features:torch.Tensor # Shape H,W,D
 
 class Gaussians(nn.Module):
     """
@@ -211,7 +213,16 @@ class Gaussians(nn.Module):
         if 'opacities' in properties:
             kwargs['opacities'] = torch.from_numpy( vertex['opacities'].reshape(-1,1) ).to(device)
         elif 'opacity' in properties:
-            kwargs['opacities'] = torch.from_numpy( vertex['opacity'].reshape(-1,1) ).to(device)
+            kwargs['opacities'] = torch.from_numpy( vertex['opacity'].reshape(-1,1).copy() ).to(device)
+
+        # Extract additional features
+        if 'feat_1' in properties:
+            feats = sorted(
+                [prop for prop in properties if prop.startswith("feat_")],
+                key=lambda feat: int( feat.split('_')[-1] )
+            )
+            features = np.stack([vertex[f] for f in feats],axis=1)
+            kwargs['additional_features'] = torch.from_numpy(features).to(device)
 
         # Create Gaussians instance
         return Gaussians(
@@ -255,7 +266,8 @@ class Gaussians(nn.Module):
             + [f'scale_{s+1}' for s in range(self.scales.shape[1])] \
             + [f'rot_{c+1}' for c in range(self.quats.shape[1])] \
             + [f'color_{d+1}_{c+1}' for d in range(self.colors.shape[1]) for c in range(self.colors.shape[2])] \
-            + ['opacity',]
+            + ['opacity',] \
+            + [f'feat_{d+1}' for d in range(self.additional_features.shape[1])]
 
         # Set up output matrix
         dtypes = [(field,'f4') for field in fields]
@@ -264,9 +276,12 @@ class Gaussians(nn.Module):
         # Create big matrix with all features
         features = np.concatenate(
             [tensor.flatten(start_dim=1).detach().cpu().numpy()
-             for tensor in ( self.means, self.scales, self.quats, self.colors, self.opacities )],
+             for tensor in ( self.means, self.scales, self.quats, self.colors, self.opacities, self.additional_features )],
             axis=1
         )
+
+        # Sanity check, make sure there are as many features as there are fields
+        assert features.shape[-1] == len(fields), "Number of fields and features does not match"
 
         # Put features as a list of tuples in output
         data[:] = list(map(tuple, features))
@@ -284,14 +299,17 @@ class Gaussians(nn.Module):
         quats:torch.Tensor=None,
         colors:torch.Tensor=None,
         opacities:torch.Tensor=None,
+        additional_features:torch.Tensor=None,
         scene_extend:float=1.,
         sh_degree:int=3,
         sh_current:int=0,
+        num_additional_features:int=0,
         device='cuda',
         act_scales=torch.exp,
         act_quats=F.normalize,
         act_colors=torch.sigmoid,
         act_opacities=torch.sigmoid,
+        act_additional_features=nn.Softmax(-1),
         block_width:int=16,
         # The following are set by src/args.py:TrainParams
         lr_positions:float=0.00016,
@@ -299,49 +317,45 @@ class Gaussians(nn.Module):
         lr_quats:float=0.001,
         lr_colors:float=0.0025,
         lr_opacities:float=0.05,
+        lr_features:float=0.0001,
     ):
         """
         Set up Gaussians instance
 
         Will raise ValueError if neither of `num_points`,`means` are set
 
-        Will raise ValueError if for some reason parameters do not share the same first dimension size
+        Will raise ValueError if parameters do not share the same first dimension size
 
         Parameters:
         - `num_pints:Optional[int]` - Number of points to initialize, if not set,
-        use `means.shape[0]` to derive the number of points.
-
+            use `means.shape[0]` to derive the number of points.
         - `means:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,3`.
-        If not specified, use `scene_size` and `num_points` to uniformly initialize means in range
-        `-scene_size, scene_size` in XYZ directions.
-
+            If not specified, use `scene_size` and `num_points` to uniformly initialize means in range
+            `-scene_size, scene_size` in XYZ directions.
         - `scales:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,3`.
-        If not specified, initialize uniformly IID in interval `0, -ln(2*scene_size)` (note that this will be passed
-        through an exp activation function)
-
+            If not specified, initialize uniformly IID in interval `0, -ln(2*scene_size)` (note that this will be passed
+            through an exp activation function)
         - `quats:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,4`.
-        If not specified, initialize uniformly random rotation.
-
+            If not specified, initialize uniformly random rotation.
         - `colors:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,3,D`.
-        Where `D=(sh_degree+1)**2`.
-        If not specified, initialize uniformly in `0,1` (note that this will be passed through a sigmoid before rendering).
-
+            Where `D=(sh_degree+1)**2`.
+            If not specified, initialize uniformly in `0,1` (note that this will be passed through a sigmoid before
+            rendering).
+        - `additional_features:Optional[torch.Tensor]` - Additional features, alongside colors. If not set, use
+            `num_features` to generate features in `[0,1]` interval.
         - `opacities:Optional[torch.Tensor]` - Use this pre-defined parameter to initialize Gaussians. Shape `N,1`.
-        If not specified, initialize to 1 (note that this will be passed through a sigmoid before rendering).
-
+            If not specified, initialize to 1 (note that this will be passed through a sigmoid before rendering).
         - `scene_size:float` - Scale of the scene, used to initialize means if unspecified.
-
-        - `sh_degree:int` - Maximum SH degree for color feature representation. Default is 0, which gives a 1-dimensional
-        feature for RGB, which is equivalent to just no fancy features and direct RGB.
-        Note that model will initialize with `Gaussians.sh_current=0`, to learn the 0-degree first. Can be upped using
-        `Gaussians.oneup-sh()`.
-
+        - `sh_degree:int` - Maximum SH degree for color feature representation. Default is 0, which gives a
+            1-dimensional feature for RGB, which is equivalent to just no fancy features and direct RGB.
+            Note that model will initialize with `Gaussians.sh_current=0`, to learn the 0-degree first. Can be upped
+            using `Gaussians.oneup_sh()`.
         - `sh_current:int` - Number of SH degrees to use from init, default is 0.
-
+        - `num_additional_features:int` - If `additional_features` is not set, generate random features of this
+            dimensionality in `[0,1]` range.
         - `act_scales`,`act_quats`,`act_colors`,`act_opacities` - Activation functions, applied before rendering
-
         - `lr_position`,`lr_scales`,`lr_quats`,`lr_colors`,`lr_opacities` - Learning rates for optimizer.
-        Note that `lr_position` will be scaled by `scene_extent`.
+            Note that `lr_position` will be scaled by `scene_extent`.
 
         `N` is the number of splats (either `num_points` or `means.shape[0]`)
         """
@@ -397,13 +411,17 @@ class Gaussians(nn.Module):
             raise ValueError("Colors have wrong shape, expecting N,D,C with D=(sh_degree+1)^2. "
                              f"Got {colors.shape} with sh_degree {sh_degree}")
 
+        # Initialize features
+        if additional_features is None:
+            additional_features = torch.rand((num_points, num_additional_features), device=self.device)
+
         # Initialize opacities
         if opacities is None:
             # such that sigmoid(opacity) = 0.1
             opacities = torch.logit( torch.ones((num_points, 1), device=self.device) * 0.1 )
 
         # Sanity check: make sure all parameters have same number of points
-        if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities)):
+        if not all(param.shape[0] == num_points for param in (means,scales,quats,colors,opacities,additional_features)):
             raise ValueError("Not all parameters of Gaussians have the same first dimension")
 
         # Save as Parameters
@@ -412,6 +430,7 @@ class Gaussians(nn.Module):
         self.quats = nn.Parameter(quats.float())
         self.colors_dc = nn.Parameter(colors[:,:1,:].float())
         self.colors_fc = nn.Parameter(colors[:,1:,:].float())
+        self.additional_features = nn.Parameter(additional_features.float())
         self.opacities = nn.Parameter(opacities.float())
 
         # Set up optimizer
@@ -422,6 +441,7 @@ class Gaussians(nn.Module):
                 {'params': [self.quats], 'lr':lr_quats, 'name': 'quats'},
                 {'params': [self.colors_dc], 'lr':lr_colors, 'name': 'colors_dc'},
                 {'params': [self.colors_fc], 'lr':lr_colors/20, 'name': 'colors_fc'},
+                {'params': [self.additional_features], 'lr':lr_features, 'name': 'additional_features'},
                 {'params': [self.opacities], 'lr':lr_opacities, 'name': 'opacities'},
             ],
             eps=1e-15,
@@ -438,7 +458,9 @@ class Gaussians(nn.Module):
         self.act_scales = act_scales
         self.act_quats = act_quats
         self.act_colors = act_colors
+        self.act_additional_features = act_additional_features
         self.act_opacities = act_opacities
+
 
         # Reset gradient stats, make sure no NameError happens
         self.reset_densification_stats()
@@ -495,6 +517,7 @@ class Gaussians(nn.Module):
             camera:Camera,
             glob_scale:float=1.0,
             bg:torch.Tensor=None,
+            return_depth:bool=False,
         ) -> RenderPackage:
         """
         Render a Camera instance using gaussian splatting
@@ -517,9 +540,6 @@ class Gaussians(nn.Module):
         - `visibility_mask:torch.Tensor` - Mask of visible splats, shape `N`
         - `alpha:torch.Tensor` - Alpha value of each pixel, shape `H,W`
         """
-        # If unspecified generate random background
-        if bg is None:
-            bg = torch.rand(3, device=self.device)
 
         # Project Gaussians from 3D to 2D
         xys, depths, radii, conics, compensation, num_tiles_hit, cov3d = gsplat.project_gaussians(
@@ -560,16 +580,25 @@ class Gaussians(nn.Module):
         else:
             colors = self.act_colors( self.colors.view(self.num_points,-1) )
 
+        C = colors.shape[-1]
+        colors = torch.cat((colors, self.additional_features), dim=-1)
+
+        opacities = self.act_opacities( self.opacities ) * compensation.unsqueeze(-1)
+
+        # If unspecified generate random background
+        if bg is None:
+            bg = torch.rand(colors.shape[-1], device=self.device)
+
 
         # Generate image
-        out_img, out_alpha = gsplat.rasterize_gaussians(
+        out_img, alpha = gsplat.rasterize_gaussians(
             xys=xys,
             depths=depths,
             radii=radii,
             conics=conics,
             num_tiles_hit=num_tiles_hit,
             colors=colors,
-            opacity=self.act_opacities( self.opacities ) * compensation.unsqueeze(-1),
+            opacity=opacities,
             img_height=camera.H,
             img_width=camera.W,
             block_width=self.block_width,
@@ -577,15 +606,38 @@ class Gaussians(nn.Module):
             return_alpha=True,
         )
 
-        rendering = out_img.permute(2,0,1)
+        rendering = out_img[:,:,:C].permute(2,0,1)
         rendering = torch.clamp(rendering, min=0.0, max=1.0)
+
+        additional_features = out_img[:,:,C:]
+
+        depth_im = None
+        if return_depth:
+            with torch.no_grad():
+                depth_im = gsplat.rasterize_gaussians(
+                    xys=xys,
+                    depths=depths,
+                    radii=radii,
+                    conics=conics,
+                    num_tiles_hit=num_tiles_hit,
+                    colors=depths.view(-1,1),
+                    opacity=opacities,
+                    img_height=camera.H,
+                    img_width=camera.W,
+                    block_width=self.block_width,
+                    background=torch.zeros(1, device=self.device),
+                    return_alpha=False,
+                ).squeeze()
+                depth_im = torch.where(alpha > 0, depth_im / alpha, depth_im.detach().max())
 
         return RenderPackage(
             rendering=rendering,
             xys=xys,
             radii=radii,
             visibility_mask=(radii > 0).squeeze(),
-            alpha=out_alpha,
+            alpha=alpha,
+            additional_features=additional_features,
+            depth=depth_im
         )
     forward=render
 
@@ -688,6 +740,7 @@ class Gaussians(nn.Module):
         scales_clone = self.scales[clone_cond].detach().clone()
         quats_clone = self.quats[clone_cond].detach().clone()
         colors_clone = self.colors[clone_cond].detach().clone()
+        additional_features_clone = self.additional_features[clone_cond].detach().clone()
         opacities_clone = self.opacities[clone_cond].detach().clone()
 
         # Split all splats with a big gradient and a large scale
@@ -699,6 +752,7 @@ class Gaussians(nn.Module):
         scales_split = self.scales[split_cond].repeat( N, 1 )
         quats_split = self.quats[split_cond].repeat( N, 1 )
         colors_split = self.colors[split_cond].repeat( N, 1, 1 )
+        additional_features_split = self.additional_features[split_cond].repeat( N, 1)
         opacities_split = self.opacities[split_cond].repeat( N, 1 )
 
         # Downscale these splats (assumes that Gaussians.scales_act is torch.exp)
@@ -745,6 +799,7 @@ class Gaussians(nn.Module):
                 'colors_dc': torch.cat( (   colors_clone[:,:1,:],    colors_split[:,:1,:]), dim=0),
                 'colors_fc': torch.cat( (   colors_clone[:,1:,:],    colors_split[:,1:,:]), dim=0),
                 'opacities': torch.cat( (opacities_clone, opacities_split), dim=0),
+                'additional_features': torch.cat( ( additional_features_clone, additional_features_split), dim=0),
             },
             prune_mask=prune_cond
         )
