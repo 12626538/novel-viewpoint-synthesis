@@ -22,23 +22,27 @@ def convert_3du(
         fname_json:str='cameras.json',
         start_frame:int=0,
         end_frame:int=-1,
-        camera_every:int=1,
-        voxel_size:float=0.025
+        step_frame:int=1,
+        voxel_size:float=0.025,
+        segmodel=None,
     ):
     """
     Function that createa a .ply point cloud from a video3d file.
 
-    :video3d_file: (str) path to the video.v3dc file
-    :outpur_dir: (str) root folder to output to, all output will be saved
+    Args:
+    - `video3d_file:str` path to the video.v3dc file
+    - `outpur_dir:str` root folder to output to, all output will be saved
         from here, and all other arguments are relative to this
-    :dname_images: (str) determines the folder name where the images should
+    - `dname_images:str` determines the folder name where the images should
         be saved
-    :fname_ply: (str) determines the filename where the point cloud should be
+    - `fname_ply:str` determines the filename where the point cloud should be
         saved. String should end with '.ply'
-    :fname_intr: (str) determines the filename where the intrinsics should be
-        saved. String should end with '.npy'
-    :fname_extr: (str) determines the filename where the extrinsics should be
-        saved. String should end with '.npy'
+    - `fname_json:str` determines the filename where the cameras should be
+        saved. String should end with `.json`.
+    - `start_frame,end_frame,step_frame:int` determines start stop indices and
+        step size to iterate dataset. Includes start, excludes stop.
+    - `voxel_size:float` determines the downsample voxel size
+
 
     """
 
@@ -67,13 +71,17 @@ def convert_3du(
     camera_lookats = []
     lookat = np.array([0,0,1])
 
+    pbar = tqdm.tqdm(desc="Converting 3DU data", mininterval=1)
+
     # Start iterating video reader
     uid = 0
-    for frame_idx, frame in tqdm.tqdm(enumerate(video3d_reader), desc="Converting 3DU data", mininterval=1):
+    for frame_idx, frame in enumerate(video3d_reader):
 
         if frame is None: break;
-        if frame_idx<start_frame or frame_idx%camera_every!=0: continue;
+        if frame_idx<start_frame or frame_idx%step_frame!=0: continue;
         if end_frame > 0 and frame_idx>=end_frame: break;
+
+        pbar.update(1)
 
         # Read data
         info = frame.info()
@@ -192,9 +200,36 @@ if __name__ == '__main__':
 
     parser.add_argument("-s", "--start-frame", type=int,default=0, help="Start frame")
     parser.add_argument("-e", "--end-frame", type=int,default=-1, help="End frame, default is last")
-    parser.add_argument("-k", "--camera-every", type=int, default=1, help="Use every k-th image")
+    parser.add_argument("-k", "--step-frame", type=int, default=1, help="Use every k-th frame, default is every")
 
     parser.add_argument("-v", "--voxel-size", type=float, default=0.025, help="Voxel downsample size")
 
+    parser.add_argument("--do-segmentation", action='store_true', default=False)
+    parser.add_argument(
+        "--seg-config", type=str, help="Segmentation model config file",
+        default="/home/jip/novel-viewpoint-synthesis/submodules/Mask2Former/configs/tdu/semantic-segmentation/minh/maskformer2_swin_large_IN21k_384_bs16_160k_res640.yaml",
+    )
+    parser.add_argument(
+        "--seg-weights", type=str, help="Segmentation model weights",
+        default="/home/jip/novel-viewpoint-synthesis/models/model_sem.pth",
+    )
+
     args = parser.parse_args()
-    convert_3du(**vars(args))
+
+    segmodel = None
+    if args.do_segmentation:
+        from src.model.m2f import SegmentationModel
+        segmodel = SegmentationModel(
+            config_file=args.seg_config,
+            model_weights=args.seg_weights
+        )
+
+    convert_3du(
+        video3d_file=args.video3d_file,
+        output_dir=args.output_dir,
+        start_frame=args.start_frame,
+        end_frame=args.end_frame,
+        step_frame=args.step_frame,
+        voxel_size=args.voxel_size,
+        segmodel=segmodel,
+    )

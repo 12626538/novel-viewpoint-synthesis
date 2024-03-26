@@ -36,6 +36,40 @@ import skimage.io
 
 
 class SegmentationModel:
+    CLASSES = [
+        'wall', 'floor', 'ceiling', 'bed', 'window', 'cabinet', 'door', 'table (excluding coffee-table, side-table, sofa-table, desk), end-table, occasional-table',
+        'plant', 'curtain, drape, valance', 'chair (excluding accent-chair, armchair, recliner)', 'painting, poster, photo', 'sofa, couch', 'mirror', 'rug, carpet, mat',
+        'accent-chair, armchair, recliner', 'desk', 'wardrobe, hall-tree, closet', 'table-lamp, floor-lamp', 'bathtub',
+        'throw-pillow, decorative-pillow, pillow, cuschion, floor-pillow', 'boxes, basket', 'dresser, chest', 'counter, countertop, kitchen-island', 'sink', 'fireplace',
+        'fridge, refrigerator', 'stair', 'bookshelf, decorative-ledge, bookcase', 'window-blind, window-shutter', 'coffe-table, side-table, sofa-table', 'toilet', 'book',
+        'kitchen-stove', 'computer, laptop, notebook', 'swivel-chair', 'towel', 'overhead-lighting, chandelier, pendant, pendent', 'tv, tv-screen, screen, monitor, television',
+        'cloth', 'fence, bannister, balauster, handrail', 'ottoman, footstool', 'bottle', 'washer, washing-machine, dryer, drying-machine', 'game, puzzle, toy', 'bag',
+        'oven, furnace', 'microwave, microwave-oven', 'flowerpot', 'bicycle', 'dishwasher', 'blanket, throw, sofa-blanket', 'kitchen-air-extractor, hood, exhaust-hood',
+        'sconce, wall-sconce', 'bin', 'fan', 'shower', 'radiator', 'wall-clock, father-clock', 'window-frame', 'door-frame',
+        'decor-accent, table-clock, candle, candleholder, lantern, bookend', 'wall-decoration, art', 'curtain-rod',
+        'sound-system, audio-system, speaker, loud-speaker, sound-box, sounding-box, stereo', 'piano', 'guitar', 'wall-switch', 'room-divider', 'telephone', 'fireplace-screen',
+        'dog-bed, cat-bed', 'kitchen-utensil', 'crockery, dish', 'cutting-board', 'pan, kitchen-pot', 'magazine-rack, magazine-basket', 'coat-rack', 'fireplace-tool',
+        'sport-machine', 'tripod', 'printer', 'wire', 'keyboard', 'mouse', 'pad', 'bed-frame', 'balcony', 'stuff', 'board', 'toilet-paper', 'heater', 'receiver', 'remote',
+        'hanger', 'soap-dispenser', 'plug', 'flush-button', 'alarm', 'shoe-rack', 'shoe', 'hair-dryer', 'temperature-controller', 'pipe', 'charger', 'ironing-table', 'shower-head',
+        'cage', 'hat', 'vacuum-cleaner', 'tent', 'drum, drum-stick', 'toilet-brush', 'baggage, luggage, suitcase', 'door-glass', 'tv-unit', 'water-pump', 'stand', 'storage', 'unknown',
+    ]
+
+    PALETTE = np.array(
+        [[128, 0, 0], [0, 128, 0], [128, 128, 0], [0, 0, 128], [128, 0, 128], [0, 128, 128], [128, 128, 128], [64, 0, 0], [192, 0, 0], [64, 128, 0], [192, 128, 0], [64, 0, 128],
+        [192, 0, 128], [64, 128, 128], [192, 128, 128], [0, 64, 0], [128, 64, 0], [0, 192, 0], [128, 192, 0], [0, 64, 128], [128, 64, 128], [0, 192, 128], [128, 192, 128],
+        [64, 64, 0], [192, 64, 0], [64, 192, 0], [192, 192, 0], [64, 64, 128], [192, 64, 128], [64, 192, 128], [192, 192, 128], [0, 0, 64], [128, 0, 64], [0, 128, 64],
+        [128, 128, 64], [0, 0, 192], [128, 0, 192], [0, 128, 192], [128, 128, 192], [64, 0, 64], [192, 0, 64], [64, 128, 64], [192, 128, 64], [64, 0, 192], [192, 0, 192],
+        [64, 128, 192], [192, 128, 192], [0, 64, 64], [128, 64, 64], [0, 192, 64], [128, 192, 64], [0, 64, 192], [128, 64, 192], [0, 192, 192], [128, 192, 192], [64, 64, 64],
+        [192, 64, 64], [64, 192, 64], [192, 192, 64], [64, 64, 192], [192, 64, 192], [64, 192, 192], [192, 192, 192], [32, 0, 0], [160, 0, 0], [32, 128, 0], [160, 128, 0],
+        [32, 0, 128], [160, 0, 128], [32, 128, 128], [160, 128, 128], [96, 0, 0], [224, 0, 0], [96, 128, 0], [224, 128, 0], [96, 0, 128], [224, 0, 128], [96, 128, 128],
+        [224, 128, 128], [32, 64, 0], [160, 64, 0], [32, 192, 0], [160, 192, 0], [32, 64, 128], [160, 64, 128], [32, 192, 128], [160, 192, 128], [96, 64, 0], [224, 64, 0],
+        [96, 192, 0], [224, 192, 0], [96, 64, 128], [224, 64, 128], [96, 192, 128], [224, 192, 128], [32, 0, 64], [160, 0, 64], [32, 128, 64], [160, 128, 64], [32, 0, 192],
+        [160, 0, 192], [32, 128, 192], [160, 128, 192], [96, 0, 64], [224, 0, 64], [96, 128, 64], [224, 128, 64], [96, 0, 192], [224, 0, 192], [96, 128, 192], [224, 128, 192],
+        [32, 64, 64], [160, 64, 64], [32, 192, 64], [160, 192, 64], [32, 64, 192], [160, 64, 192], [32, 192, 192], [160, 192, 192], [96, 64, 64]],
+        dtype=np.uint8
+    )
+
+
     def __init__(self, config_file, model_weights):
         # load config from file and command-line arguments
         cfg = get_cfg()
@@ -45,68 +79,17 @@ class SegmentationModel:
         cfg.merge_from_list(['MODEL.WEIGHTS', model_weights])
         cfg.freeze()
 
-        self.metadata = MetadataCatalog.get(
-            cfg.DATASETS.TEST[0] if len(cfg.DATASETS.TEST) else "__unused"
-        )
         self.predictor = DefaultPredictor(cfg)
 
-        self.CLASSES = self.metadata.get("stuff_classes")
-        self.PALETTE = self.metadata.get("stuff_colors")
+    def segment(self, input_img, output_file=None):
+        logits = self.predictor(input_img)['sem_seg']
 
-    def segment(self, input_imgs, output_file=None):
-        predictions = self.predictor(input_imgs)
-        color_seg_list = []
+        seg_file = (logits.argmax(dim=0)).cpu().numpy().astype(np.uint8)
+        color_seg = self.PALETTE[seg_file]
 
-        for prediction, input_img in zip(predictions, input_imgs):
-            seg_file = (prediction["sem_seg"].argmax(dim=0)).cpu().numpy().astype(np.uint8)
+        alpha = .4
+        combined = ( alpha * color_seg + (1-alpha) * input_img ).astype(np.uint8)
 
-            palette = np.array(self.PALETTE)
-            assert palette.shape[0] == len(self.CLASSES)
-            assert palette.shape[1] == 3
-            assert len(palette.shape) == 2
-            color_seg = np.zeros((seg_file.shape[0], seg_file.shape[1], 3), dtype=np.uint8)
-            for label, color in enumerate(palette):
-                color_seg[seg_file == label, :] = color
+        stacked = np.hstack((input_img, combined, color_seg))
 
-            img_seg_ = input_img * 0.5 + color_seg * 0.5
-            img_seg = img_seg_.astype(np.uint8)
-
-            combine = np.hstack((input_img, img_seg_, color_seg))
-
-            if output_file:
-                if not os.path.isdir(output_file):
-                    os.makedirs(output_file)
-
-                seg_name = "segmentation"
-                out_file_img_seg = "color"
-
-                skimage.io.imsave(+"jpg", combine.astype(np.uint8))
-                skimage.io.imsave(str(out_file_img_seg)[:-3] + "png", color_seg)
-                skimage.io.imsave(str(seg_name)[:-3] + "png", seg_file + 1)
-
-            color_seg_list.append(color_seg)
-
-        return color_seg_list
-
-class SegmentationModelBatched:
-    def __init__(self, config_file, model_weights):
-        # load config from file and command-line arguments
-        cfg = get_cfg()
-        add_deeplab_config(cfg)
-        add_maskformer2_config(cfg)
-        cfg.merge_from_file(config_file)
-        cfg.merge_from_list(['MODEL.WEIGHTS', model_weights])
-        cfg.freeze()
-
-        self.metadata = MetadataCatalog.get(
-            cfg.DATASETS.TEST[0] if len(cfg.DATASETS.TEST) else "__unused"
-        )
-
-        checkpointer = DetectionCheckpointer(self.model)
-        checkpointer.load(cfg.MODEL.WEIGHTS)
-
-        self.CLASSES = self.metadata.get("stuff_classes")
-        self.PALETTE = self.metadata.get("stuff_colors")
-
-        self.model = build_model(cfg)
-        self.model.eval()
+        return stacked
