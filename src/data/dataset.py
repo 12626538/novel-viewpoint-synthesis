@@ -178,6 +178,8 @@ class DataSet:
         - `cameras:list[Camera]` A list of cameras to use
         """
 
+        assert len(cameras) >0, "Cannot initialize empty dataset"
+
         # Make sure cameras appear in the same order every run
         self.cameras = sorted(cameras, key=lambda cam:cam.name)
 

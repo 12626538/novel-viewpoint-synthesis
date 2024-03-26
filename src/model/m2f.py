@@ -1,38 +1,11 @@
-import argparse
-import glob
-import multiprocessing as mp
-import os
-
-# fmt: off
-import sys
-sys.path.insert(1, os.path.join(sys.path[0], '..'))
-# fmt: on
-
-import tempfile
-import time
-import warnings
-
-import cv2
 import numpy as np
-import tqdm
-
-import torch
-from torch.utils.data import Dataset, DataLoader
-from torchvision.transforms import Compose, ToTensor, Normalize
 
 from detectron2.config import get_cfg
-from detectron2.data.detection_utils import read_image
 from detectron2.projects.deeplab import add_deeplab_config
-from detectron2.utils.logger import setup_logger
-from detectron2.modeling import build_model
-from detectron2.data import MetadataCatalog
-from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.engine.defaults import DefaultPredictor
 
 
 from .mask2former.config import add_maskformer2_config
-from pathlib import Path
-import skimage.io
 
 
 class SegmentationModel:
@@ -81,15 +54,35 @@ class SegmentationModel:
 
         self.predictor = DefaultPredictor(cfg)
 
-    def segment(self, input_img, output_file=None):
+        import torch
+        torch.uint8
+
+    def segment(self, input_img:np.ndarray, alpha:float=.4) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Segment image
+
+        Args:
+        - `input_img:np.ndarray` of shape H,W,C and dtype np.unin8
+        - `alpha:float=0.4` is the blending value for `combined` return value
+
+        Returns:
+        - `labels:np.ndarray` of shape H,W where each 'pixel' is the predicted
+            class label
+        - `color_seg:np.ndarray` of shape H,W,C. Same as labels, except using
+            the color of each class as defined in `PALETTE`
+        - `combined:np.ndarray` is `input_img` overlayed with `color_seg`
+            with the provided `alpha` value for blending.
+        """
+        # Forward pass
         logits = self.predictor(input_img)['sem_seg']
 
-        seg_file = (logits.argmax(dim=0)).cpu().numpy().astype(np.uint8)
-        color_seg = self.PALETTE[seg_file]
+        # Convert to class labels
+        labels = (logits.argmax(dim=0)).cpu().numpy().astype(np.uint8)
 
-        alpha = .4
+        # Apply palette
+        color_seg = self.PALETTE[labels]
+
+        # Blend input with colors
         combined = ( alpha * color_seg + (1-alpha) * input_img ).astype(np.uint8)
 
-        stacked = np.hstack((input_img, combined, color_seg))
-
-        return stacked
+        return labels, color_seg, combined

@@ -32,8 +32,11 @@ def render_images(
         background:torch.Tensor
     ):
     """
-    Render a list of cameras using model and save in out_dir.
+    Render a list of cameras using model and save in out_dir
+
+    Creates folder if it does not exist yet.
     """
+    os.makedirs(out_dir, exist_ok=True)
 
     for camera in cameras:
         render_pkg = model.render(camera, glob_scale=glob_scale, bg=background)
@@ -158,14 +161,15 @@ if __name__ == '__main__':
     # Simple render images and save to out_dir
     if args.method == "images":
         dataset = get_dataset(args, data_args)
-        render_images(
-            cameras=dataset.cameras,
-            model=model,
-            out_dir=args.out_dir,
-            glob_scale=args.glob_scale,
-            background=args.background
-        )
 
+        for part in ('train', 'test'):
+            render_images(
+                cameras=dataset.iter(part),
+                model=model,
+                out_dir=os.path.join(args.out_dir,part),
+                glob_scale=args.glob_scale,
+                background=args.background
+            )
     # Render images as video
     elif args.method == "video":
         dataset = get_dataset(args, data_args)
@@ -244,16 +248,18 @@ if __name__ == '__main__':
     # Render images as video
     elif args.method == "smoothvideo":
 
-        from src.utils.smoothing_utils import *
+        from src.utils.smoothing_utils import smooth_camera_path
 
         dataset = get_dataset(args, data_args)
 
+        print("Smoothing camera path...")
         fps = args.dataset_fps if args.fps is None else args.fps
         num_frames = args.T * fps
 
         poses = smooth_camera_path(dataset.cameras, num_poses=num_frames)
         num_poses = len(poses)
 
+        print("Rendering video...")
         def render_frame(t):
             # Get pose at current timestep
             i = round((t / args.T)*(num_poses-1))

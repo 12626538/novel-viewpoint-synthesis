@@ -299,7 +299,7 @@ if __name__ == '__main__':
         args.device = 'cuda:0'
 
     # 3DU datasets from src/preprocessing/convert_3du.py
-    if "3du_data_" in data_args.source_path:
+    if "3du_data" in data_args.source_path:
         print("Reading from 3DU dataset...")
         dataset = DataSet.from_3du(
             device=args.device,

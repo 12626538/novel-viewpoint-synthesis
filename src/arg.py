@@ -74,7 +74,7 @@ class ModelParams(ParamGroup):
         self.lr_opacities = 0.05
 
         # Tile size for gsplat.RasterizeGaussians
-        self.block_width = 16
+        self.block_size = 16
         super().__init__(*arg,**kwarg)
 
 

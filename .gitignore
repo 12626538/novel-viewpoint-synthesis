@@ -4,7 +4,9 @@
 nohup.out
 *.code-workspace
 *.png
-
+*.gif
+*.mp4
+/.vscode
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

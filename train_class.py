@@ -19,10 +19,15 @@ except ModuleNotFoundError:
     print("Warning! Tensorboard not available")
     USE_TENSORBOARD=False
 
+import cv2
+
 from src.model.gaussians import Gaussians,RenderPackage
+from src.model.m2f import SegmentationModel
 from src.data import DataSet
-from src.utils.metric_utils import get_loss_fn,SSIM,LPIPS
 from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams,get_args
+from src.utils.metric_utils import get_loss_fn,SSIM,LPIPS
+from src.utils import image_path_to_tensor
+
 
 if __name__ == '__main__':
 
@@ -53,36 +58,20 @@ if __name__ == '__main__':
         dataset = DataSet.from_colmap(device=args.device, **vars(data_args))
 
     # Read classes metadata
-    class_names,class_colors = [],[]
-    with open("/home/jip/novel-viewpoint-synthesis/submodules/Mask2Former/demo/3du_classes.txt", 'r') as f:
-        for line in f.readlines():
-            name, colors = line.strip().split(",")
-            colors = [int(c)/255 for c in colors.strip().split(" ")]
-            class_names.append(name)
-            class_colors.append(colors)
-    class_colors = torch.tensor(class_colors, device=args.device, dtype=torch.float32)
-    num_additional_features = len(class_names)
+    class_names = SegmentationModel.CLASSES
+    class_colors = torch.from_numpy( SegmentationModel.PALETTE / 255.).to(device=args.device)
+    num_classes = len(class_names)
+
 
     # Read segmentation masks
-    from src.utils import image_path_to_tensor
-    mask_dir = os.path.abspath("/home/jip/data1/3du_data_8/segmentations")
+    seg_dir = os.path.join(args.source_path,'segmentations')
     for cam in dataset.cameras:
-        path = os.path.join(mask_dir, cam.name)
+        # TODO: make this more reliable
+        path = os.path.join(seg_dir, cam.name.replace('.png','.npy'))
 
-        segmentation = image_path_to_tensor(path).cuda()[:3].permute(1,2,0).flatten(end_dim=-2)
-        classes = torch.zeros(segmentation.shape[0], dtype=torch.long, device=args.device)
-        isworking = torch.zeros(segmentation.shape[0], dtype=torch.long, device=args.device)
-
-        for c,color in enumerate(class_colors):
-            # BUG: this exact checking might not work always, quick experiment shows it doesnt match everywhere always
-            # Maybe some .isclose method
-            # TODO: this method is also just ugly
-            _mask = (segmentation[:,0] == color[0]) & (segmentation[:,1] == color[1]) & (segmentation[:,2] == color[2])
-
-            classes[_mask] = c
-
-
-        cam.gt_image = classes
+        # Read as shape C,H,W, convert to shape H*W,C
+        segmentation = np.load(path)
+        cam.gt_image = torch.from_numpy( segmentation.flatten() ).to(device=args.device, dtype=torch.long)
 
     # Use checkpoint
     if pipeline_args.load_checkpoint:
@@ -91,11 +80,13 @@ if __name__ == '__main__':
             device=args.device,
             path_to_ply_file=pipeline_args.load_checkpoint,
             **vars(model_args),
-            num_additional_features=num_additional_features,
+            num_additional_features=num_classes,
         )
         model.sh_degree_current = model.sh_degree_max
     else:
         raise ValueError("Please provide a checkpoint")
+
+    os.makedirs('renders/segmentations/', exist_ok=True)
 
     loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
 
@@ -111,7 +102,12 @@ if __name__ == '__main__':
         else:
             group['lr'] = 0.
 
-    bg = torch.zeros((3+num_additional_features,), device='cuda', dtype=torch.float32)
+    try:
+        unk_class = class_names.index('unknown')
+    except ValueError:
+        unk_class = 0
+    bg = torch.zeros((3+num_classes,), device='cuda', dtype=torch.float32)
+    bg[3+unk_class] = 1.
 
     test_cam = dataset.cameras[ len(dataset.cameras)//2 ]
 
@@ -130,7 +126,7 @@ if __name__ == '__main__':
 
         # Forward pass
         pkg = model.render(cam, bg=bg)
-        feat = pkg.additional_features.view(-1,num_additional_features)
+        feat = pkg.additional_features.view(-1,num_classes)
         loss = loss_fn(feat, cam.gt_image)
 
         # Use alpha channel to account for areas with no splats
@@ -144,12 +140,12 @@ if __name__ == '__main__':
         # Iter report
         losses.append(loss.item())
 
-        if it%(iters//15) == 0 or it == iters-1:
+        if it%50 == 0 or it == iters-1:
             pkg = model.render(test_cam, bg=bg)
             feat = pkg.additional_features.argmax(dim=-1)
 
             feat_rgb = class_colors[feat % class_colors.shape[0]].permute(2,0,1)
-            save_image(feat_rgb,f"renders/segmentation_{it}.png")
+            save_image(feat_rgb,f"renders/segmentation_latest.png")
 
     # Lossplot
     import matplotlib.pyplot as plt

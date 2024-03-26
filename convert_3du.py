@@ -1,12 +1,13 @@
 import os
 import numpy as np
-import open3d as o3d
-import video3d
-import cv2
 import json
 import math
-
 import tqdm
+
+from src.model.m2f import SegmentationModel
+import cv2
+import open3d as o3d
+import video3d
 
 def focal2fov(focal:float, pixels:int) -> float:
     """
@@ -18,13 +19,14 @@ def convert_3du(
         video3d_file:str,
         output_dir:str,
         dname_images:str='images',
+        dname_segmentations:str='segmentations',
         fname_ply:str='point_cloud.ply',
         fname_json:str='cameras.json',
         start_frame:int=0,
         end_frame:int=-1,
         step_frame:int=1,
         voxel_size:float=0.025,
-        segmodel=None,
+        segmodel:SegmentationModel=None,
     ):
     """
     Function that createa a .ply point cloud from a video3d file.
@@ -42,16 +44,17 @@ def convert_3du(
     - `start_frame,end_frame,step_frame:int` determines start stop indices and
         step size to iterate dataset. Includes start, excludes stop.
     - `voxel_size:float` determines the downsample voxel size
-
+    - `segmodel:Optional[SegmentationModel]` is the segmentation model to be used
 
     """
 
     # Set up output directories
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
-
     output_ply = os.path.join(output_dir, fname_ply)
     output_json = os.path.join(output_dir, fname_json)
+    output_segmentations = os.path.join(output_dir, dname_segmentations)
+    os.makedirs(output_segmentations, exist_ok=True)
     output_images = os.path.join(output_dir, dname_images)
     os.makedirs(output_images, exist_ok=True)
 
@@ -71,7 +74,10 @@ def convert_3du(
     camera_lookats = []
     lookat = np.array([0,0,1])
 
-    pbar = tqdm.tqdm(desc="Converting 3DU data", mininterval=1)
+    pbar = tqdm.tqdm(desc="Converting 3DU data", mininterval=1, unit="frame")
+
+    segvideo = None
+    segmentations = []
 
     # Start iterating video reader
     uid = 0
@@ -109,14 +115,34 @@ def convert_3du(
         R = extrinsics_inv[:3,:3]
         t = extrinsics_inv[:3,3]
 
-        fname = f'{frame_idx:06d}.png'
+        fname = f'frame{frame_idx:06d}'
+        fname_png = fname+'.png'
+        fname_npy = fname+'.npy'
         # Save frame
         img = frame.img().astype(np.uint8)
-        if not os.path.isfile(os.path.join(output_images, fname)):
-            cv2.imwrite(os.path.join(output_images, fname), img)
+        if not os.path.isfile(os.path.join(output_images, fname_png)):
+            cv2.imwrite(os.path.join(output_images, fname_png), img)
+
+        if segmodel is not None:
+            labels,colors,blend = segmodel.segment(img)
+
+            if segvideo is None:
+                segvideo = cv2.VideoWriter(
+                    os.path.join(output_dir,'segmentation.mp4'),
+                    fourcc=cv2.VideoWriter_fourcc(*'mp4v'),
+                    fps=round(30/step_frame) if step_frame < 30 else 1,
+                    isColor=True, frameSize=(img.shape[1],img.shape[0]),
+                )
+            segvideo.write(blend)
+
+            np.save(
+                file=os.path.join(output_segmentations, fname_npy),
+                arr=labels
+            )
 
         f_cameras.write(json.dumps({
-            "image": fname,
+            "image": fname_png,
+            "segmentation": fname_npy,
             "fovx": focal2fov(intrinsics[0,0], W),
             "fovy": focal2fov(intrinsics[1,1], H),
             "cx_frac": intrinsics[0,2] / W,
@@ -172,6 +198,11 @@ def convert_3du(
         else:
             pointcloud += pcd
 
+    pbar.close()
+    if segvideo is not None:
+        segvideo.release()
+
+
     print("Number of frames/cameras:",uid)
 
     f_cameras.close()
@@ -181,8 +212,8 @@ def convert_3du(
     camera_lookats = np.stack(camera_lookats, axis=0)
     camera_pcd = o3d.geometry.PointCloud(points=o3d.utility.Vector3dVector(camera_locs))
     camera_pcd.normals = o3d.utility.Vector3dVector(camera_lookats)
-    fname = os.path.join( os.path.dirname(output_ply), 'cameras.ply' )
-    o3d.io.write_point_cloud(fname, camera_pcd, write_ascii=True)
+    fname_png = os.path.join( os.path.dirname(output_ply), 'cameras.ply' )
+    o3d.io.write_point_cloud(fname_png, camera_pcd, write_ascii=True)
 
     # Reduce to more useful construction
     pointcloud = pointcloud.voxel_down_sample(voxel_size=voxel_size)
@@ -218,7 +249,6 @@ if __name__ == '__main__':
 
     segmodel = None
     if args.do_segmentation:
-        from src.model.m2f import SegmentationModel
         segmodel = SegmentationModel(
             config_file=args.seg_config,
             model_weights=args.seg_weights

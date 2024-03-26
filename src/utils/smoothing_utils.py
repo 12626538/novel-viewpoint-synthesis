@@ -49,7 +49,7 @@ def catmull_rom_spline(P0,P1,P2,P3, num_points, alpha) -> np.ndarray:
     t1: float = tj(t0, P0, P1)
     t2: float = tj(t1, P1, P2)
     t3: float = tj(t2, P2, P3)
-    t = np.linspace(t1, t2, num_points).reshape(num_points, 1)
+    t = np.linspace(t1, t2, num_points, endpoint=False).reshape(num_points, 1)
 
     A1 = (t1 - t) / (t1 - t0) * P0 + (t - t0) / (t1 - t0) * P1
     A2 = (t2 - t) / (t2 - t1) * P1 + (t - t1) / (t2 - t1) * P2
@@ -74,7 +74,12 @@ def smooth_directions(directions:np.ndarray, num_points:int, alpha:float):
         ]
     )
 
-def smooth_camera_path(cameras, num_poses=600, alpha:float=1) -> list[np.ndarray]:
+def smooth_camera_path(
+        cameras,
+        num_poses=600,
+        group_size:int=10,
+        alpha:float=.5
+    ) -> list[np.ndarray]:
     """
     Interpolate between cameras to create a smooth path
 
@@ -82,31 +87,35 @@ def smooth_camera_path(cameras, num_poses=600, alpha:float=1) -> list[np.ndarray
     - `cameras:list[Camera]` A sorted list of camera instances
     - `num_poses:int` Total number of poses to interpolate
     - `alpha:float` Smoothing factor for Catmull Rom spline function
+    - `group_size:int` To further smooth, group the cameras into groups of this
+        size, average the pose of the group and use that instead of individual
+        frames.
 
     Returns:
     - `poses:np.ndarray` A list of np arrays where the ith entry is the 4x4
         interpolated world-to-view matrix
     """
-    # Use 3D 'lookAt' vector for direction
+
+    # Get location of every camera
+    locs = np.array([cam.loc for cam in cameras])
+    locs = locs[:(locs.shape[0]//group_size)*group_size].reshape(-1,group_size,3).mean(axis=1)
+    locs = np.pad(locs, ((1,1),(0,0)),'reflect',reflect_type='odd')
+
+    # Get lookAt for every camera
     lookat = np.array([0,0,1])
-
-    # get lookAt for every camera
     lookats = np.array([cam.R.T @ lookat for cam in cameras])
+    # lookats = np.array( [locs[i+1] - locs[i] for i in range(locs.shape[0]-1)] )
+    # lookats = np.pad(lookats, ((0,1),(0,0)),'reflect',reflect_type='odd')
 
+    # squish Y axis (up-down) motion
     lookats[:,1] /= 2
     lookats /= np.linalg.norm(lookats, axis=-1, keepdims=True)
 
-    n_combine = 10
 
     # Group take the mean of every N cameras, extrapolate additional start and end value
-    grouped_lookats = lookats[:(lookats.shape[0]//n_combine)*n_combine].reshape(-1,n_combine,3).mean(axis=1)
+    grouped_lookats = lookats[:(lookats.shape[0]//group_size)*group_size].reshape(-1,group_size,3).mean(axis=1)
     grouped_lookats = np.vstack((lookats[:1],grouped_lookats,lookats[-1:]))
     grouped_lookats = np.pad(grouped_lookats, ((1,1),(0,0)),'reflect',reflect_type='odd')
-
-    # Do the same for camera locations
-    locs = np.array([cam.loc for cam in cameras])
-    locs = locs[:(locs.shape[0]//n_combine)*n_combine].reshape(-1,n_combine,3).mean(axis=1)
-    locs = np.pad(locs, ((1,1),(0,0)),'reflect',reflect_type='odd')
 
     # Smooth everything out
     smooth_lookats = smooth_directions(grouped_lookats, num_poses, alpha)

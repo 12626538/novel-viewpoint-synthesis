@@ -310,7 +310,7 @@ class Gaussians(nn.Module):
         act_colors=torch.sigmoid,
         act_opacities=torch.sigmoid,
         act_additional_features=nn.Softmax(-1),
-        block_width:int=16,
+        block_size:int=16,
         # The following are set by src/args.py:TrainParams
         lr_positions:float=0.00016,
         lr_scales:float=0.005,
@@ -452,7 +452,7 @@ class Gaussians(nn.Module):
         self.lr_schedule = None
 
         # Tile size when rendering
-        self.block_width = block_width
+        self.block_size = block_size
 
         # Set activation functions
         self.act_scales = act_scales
@@ -555,7 +555,7 @@ class Gaussians(nn.Module):
             cy=camera.cy,
             img_width=camera.W,
             img_height=camera.H,
-            block_width=self.block_width,
+            block_width=self.block_size,
             clip_thresh=camera.znear,
         )
 
@@ -601,7 +601,7 @@ class Gaussians(nn.Module):
             opacity=opacities,
             img_height=camera.H,
             img_width=camera.W,
-            block_width=self.block_width,
+            block_width=self.block_size,
             background=bg,
             return_alpha=True,
         )
@@ -624,7 +624,7 @@ class Gaussians(nn.Module):
                     opacity=opacities,
                     img_height=camera.H,
                     img_width=camera.W,
-                    block_width=self.block_width,
+                    block_width=self.block_size,
                     background=torch.zeros(1, device=self.device),
                     return_alpha=False,
                 ).squeeze()
