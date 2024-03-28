@@ -20,7 +20,7 @@ except ModuleNotFoundError:
     USE_TENSORBOARD=False
 
 from src.model.gaussians import Gaussians,RenderPackage
-from src.data import DataSet
+from src.data import DataSet,BatchedDataSet
 from src.utils.metric_utils import get_loss_fn,SSIM,LPIPS
 from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams,get_args
 
@@ -66,7 +66,10 @@ def train_report(
 
     if iter==1 or iter%100 == 0:
 
-        camera = dataset.cameras[0]
+        if isinstance(dataset, BatchedDataSet):
+            camera = dataset.load_camera(0)
+        else:
+            camera = dataset.cameras[0]
         render = model.render(camera, bg=torch.zeros(3,device=device)).rendering
         save_image(render,f"renders/latest_{pipeline_args.model_name}.png")
 
@@ -160,8 +163,8 @@ def train_report(
                 if summarizer is not None:
                     summarizer.add_scalar(f"{partition}_metric/{metric}", stats[metric], iter)
 
-        eval_set("train", eval_every=10)
-        eval_set("test")
+        # eval_set("train", eval_every=10)
+        # eval_set("test")
 
 def train_loop(
     model:Gaussians,
@@ -173,7 +176,7 @@ def train_loop(
 
     # initialize lr schedule
     model.init_lr_schedule(
-        warmup_until=len(dataset),
+        warmup_until=1000,
         decay_for=train_args.iterations//3,
         decay_from=train_args.iterations - train_args.iterations//3
     )
@@ -207,8 +210,13 @@ def train_loop(
 
         model.optimizer.zero_grad(set_to_none=True)
 
-        # Forward pass
         camera = next(dataset_cycle)
+        cam_to_cpu = False
+        if camera.device == 'cpu':
+            cam_to_cpu = True
+            camera.to(model.device)
+
+        # Forward pass
         rendering_pkg = model.render(camera, bg=background)
 
         loss,loss_pkg = loss_fn(rendering_pkg.rendering, camera.gt_image)
@@ -274,6 +282,9 @@ def train_loop(
         if model.lr_schedule is not None:
             model.lr_schedule.step()
 
+        if cam_to_cpu:
+            camera.to('cpu')
+
     if pbar is not None:
         pbar.close()
 
@@ -301,7 +312,7 @@ if __name__ == '__main__':
     # 3DU datasets from src/preprocessing/convert_3du.py
     if "3du_data" in data_args.source_path:
         print("Reading from 3DU dataset...")
-        dataset = DataSet.from_3du(
+        dataset = BatchedDataSet.from_3du(
             device=args.device,
             **vars(data_args)
         )

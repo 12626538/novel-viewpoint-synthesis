@@ -162,6 +162,8 @@ if __name__ == '__main__':
     if args.method == "images":
         dataset = get_dataset(args, data_args)
 
+        print("Rendering images...")
+
         for part in ('train', 'test'):
             render_images(
                 cameras=dataset.iter(part),
@@ -200,6 +202,7 @@ if __name__ == '__main__':
 
             return out
 
+        print("Rendering video...")
         render_video(
             render_frame=render_frame,
             fname=os.path.join(args.out_dir, "reconstruction.mp4"),
@@ -238,6 +241,7 @@ if __name__ == '__main__':
 
             return out
 
+        print("Rendering video...")
         render_video(
             render_frame=render_frame,
             fname=os.path.join(args.out_dir, "reconstruction_blended.mp4"),
@@ -259,7 +263,6 @@ if __name__ == '__main__':
         poses = smooth_camera_path(dataset.cameras, num_poses=num_frames)
         num_poses = len(poses)
 
-        print("Rendering video...")
         def render_frame(t):
             # Get pose at current timestep
             i = round((t / args.T)*(num_poses-1))
@@ -279,6 +282,7 @@ if __name__ == '__main__':
 
             return out
 
+        print("Rendering video...")
         render_video(
             render_frame=render_frame,
             fname=os.path.join(args.out_dir, "reconstruction_smooth.mp4"),
@@ -296,7 +300,6 @@ if __name__ == '__main__':
             num_cameras=round(args.T * args.fps),
         )
 
-        print("Rendering video...")
 
         cameras = sorted(dataset.cameras, key=lambda cam: cam.name)
         H = min(cam.H for cam in cameras)
@@ -316,6 +319,7 @@ if __name__ == '__main__':
             out[:H, :W] = A
             return out
 
+        print("Rendering video...")
         render_video(
             render_frame=render_frame,
             fname=os.path.join(args.out_dir, "rotation.mp4"),

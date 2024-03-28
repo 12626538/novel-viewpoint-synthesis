@@ -52,7 +52,7 @@ def cb_mouse(event, x, y, flags, param):
 
 parser = argparse.ArgumentParser("Training Novel Viewpoint Synthesis")
 parser.add_argument("-H", type=int, default=720)
-parser.add_argument("-W", type=int, default=1280)
+parser.add_argument("-W", type=int, default=960)
 args, (data_args, model_args, pipeline_args) = get_args(DataParams,ModelParams,PipeLineParams, parser=parser)
 
 try:
@@ -102,8 +102,8 @@ while True:
     camera = Camera(
         R = R,
         t = -loc @ R.T,
-        fovx=np.deg2rad(30),
-        fovy=np.deg2rad(30),
+        fovx=np.deg2rad(62),
+        fovy=np.deg2rad(48),
         H=args.H,W=args.W,
         device=args.device,
         zsign=zsign

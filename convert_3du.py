@@ -115,13 +115,11 @@ def convert_3du(
         R = extrinsics_inv[:3,:3]
         t = extrinsics_inv[:3,3]
 
-        fname = f'frame{frame_idx:06d}'
-        fname_png = fname+'.png'
-        fname_npy = fname+'.npy'
+        fname = f'frame{frame_idx:06d}.png'
         # Save frame
         img = frame.img().astype(np.uint8)
-        if not os.path.isfile(os.path.join(output_images, fname_png)):
-            cv2.imwrite(os.path.join(output_images, fname_png), img)
+        if not os.path.isfile(os.path.join(output_images, fname)):
+            cv2.imwrite(os.path.join(output_images, fname), img)
 
         if segmodel is not None:
             labels,colors,blend = segmodel.segment(img)
@@ -135,14 +133,10 @@ def convert_3du(
                 )
             segvideo.write(blend)
 
-            np.save(
-                file=os.path.join(output_segmentations, fname_npy),
-                arr=labels
-            )
+            cv2.imwrite( os.path.join(output_segmentations, fname), labels )
 
         f_cameras.write(json.dumps({
-            "image": fname_png,
-            "segmentation": fname_npy,
+            "fname": fname,
             "fovx": focal2fov(intrinsics[0,0], W),
             "fovy": focal2fov(intrinsics[1,1], H),
             "cx_frac": intrinsics[0,2] / W,
@@ -212,8 +206,8 @@ def convert_3du(
     camera_lookats = np.stack(camera_lookats, axis=0)
     camera_pcd = o3d.geometry.PointCloud(points=o3d.utility.Vector3dVector(camera_locs))
     camera_pcd.normals = o3d.utility.Vector3dVector(camera_lookats)
-    fname_png = os.path.join( os.path.dirname(output_ply), 'cameras.ply' )
-    o3d.io.write_point_cloud(fname_png, camera_pcd, write_ascii=True)
+    fname = os.path.join( os.path.dirname(output_ply), 'cameras.ply' )
+    o3d.io.write_point_cloud(fname, camera_pcd, write_ascii=True)
 
     # Reduce to more useful construction
     pointcloud = pointcloud.voxel_down_sample(voxel_size=voxel_size)

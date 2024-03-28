@@ -6,7 +6,7 @@ import torch
 from torchvision.utils import save_image
 
 from src.model.gaussians import Gaussians,RenderPackage
-from src.model.m2f import SegmentationModel
+from src.model.m2f import CLASSES,PALETTE
 from src.data import DataSet,get_rotating_dataset
 from src.arg import ModelParams,DataParams,PipeLineParams,get_args
 from src.camera import Camera
@@ -121,8 +121,8 @@ if __name__ == '__main__':
         )
 
         # Read classes metadata
-        class_names = SegmentationModel.CLASSES
-        class_colors = SegmentationModel.PALETTE / 255.
+        class_names = CLASSES
+        class_colors = PALETTE / 255.
         class_colors = torch.tensor(class_colors, device=args.device, dtype=torch.float32)
 
 

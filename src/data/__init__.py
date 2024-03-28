@@ -1,5 +1,6 @@
 import numpy as np
 from .dataset import DataSet
+from .batchedataset import BatchedDataSet
 
 def get_rotating_dataset(
         num_cameras=120,

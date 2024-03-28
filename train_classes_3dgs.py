@@ -1,37 +1,28 @@
 import os
 import numpy as np
-
-try:
-    import tqdm
-    USE_TQDM=True
-except ModuleNotFoundError:
-    USE_TQDM=False
+import tqdm
+import argparse
 
 import torch
 from torchvision.utils import save_image
-from torcheval.metrics.functional import peak_signal_noise_ratio as psnr
 
-
-try:
-    from torch.utils.tensorboard import SummaryWriter
-    USE_TENSORBOARD=True
-except ModuleNotFoundError:
-    print("Warning! Tensorboard not available")
-    USE_TENSORBOARD=False
-
-import cv2
-
-from src.model.gaussians import Gaussians,RenderPackage
-from src.model.m2f import SegmentationModel
+from src.model.gaussians import Gaussians
+from src.model.m2f import CLASSES,PALETTE,SegmentationModel
 from src.data import DataSet
 from src.arg import ModelParams,DataParams,TrainParams,PipeLineParams,get_args
-from src.utils.metric_utils import get_loss_fn,SSIM,LPIPS
-from src.utils import image_path_to_tensor
-
 
 if __name__ == '__main__':
 
     # Get args
+    parser = argparse.ArgumentParser("Training 3DGS model on M2F predictions")
+    parser.add_argument(
+        "--seg-config", type=str, help="Segmentation model config file",
+        default="/home/jip/novel-viewpoint-synthesis/submodules/Mask2Former/configs/tdu/semantic-segmentation/jip/maskformer2_swin_large_IN21k_384_bs16_160k_res640.yaml",
+    )
+    parser.add_argument(
+        "--seg-weights", type=str, help="Segmentation model weights",
+        default="/home/jip/novel-viewpoint-synthesis/models/model_sem.pth",
+    )
     args,(data_args,model_args,train_args,pipeline_args) = get_args(
         DataParams, ModelParams, TrainParams, PipeLineParams,
         save_args=False
@@ -44,34 +35,17 @@ if __name__ == '__main__':
         print(f"!Warning! Could not use device {args.device}, falling back to cuda:0.")
         args.device = 'cuda:0'
 
-    # 3DU datasets from src/preprocessing/convert_3du.py
-    if "3du_data_" in data_args.source_path:
-        print("Reading from 3DU dataset...")
-        dataset = DataSet.from_3du(
-            device=args.device,
-            **vars(data_args)
-        )
-
-    # Paper datasets are COLMAP formatted
-    else:
-        print("Reading dataset from COLMAP...")
-        dataset = DataSet.from_colmap(device=args.device, **vars(data_args))
+    print("Reading from 3DU dataset...")
+    dataset = DataSet.from_3du(
+        device=args.device,
+        image_format='seg',
+        **vars(data_args)
+    )
 
     # Read classes metadata
-    class_names = SegmentationModel.CLASSES
-    class_colors = torch.from_numpy( SegmentationModel.PALETTE / 255.).to(device=args.device)
+    class_names = CLASSES
+    class_colors = torch.from_numpy( PALETTE / 255.).to(device=args.device)
     num_classes = len(class_names)
-
-
-    # Read segmentation masks
-    seg_dir = os.path.join(args.source_path,'segmentations')
-    for cam in dataset.cameras:
-        # TODO: make this more reliable
-        path = os.path.join(seg_dir, cam.name.replace('.png','.npy'))
-
-        # Read as shape C,H,W, convert to shape H*W,C
-        segmentation = np.load(path)
-        cam.gt_image = torch.from_numpy( segmentation.flatten() ).to(device=args.device, dtype=torch.long)
 
     # Use checkpoint
     if pipeline_args.load_checkpoint:
@@ -90,15 +64,12 @@ if __name__ == '__main__':
 
     loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
 
-    # Make sure there is at least one image to train on
-    # assert any(cam.name in masks for cam in dataset.iter('train')), "There are no masks found to train on"
-
     torch.cuda.empty_cache()
 
     # Only train 'additional_features'
     for group in model.optimizer.param_groups:
         if group['name'] == 'additional_features':
-            group['lr'] = 0.0010
+            group['lr'] = 0.0050
         else:
             group['lr'] = 0.
 
@@ -114,8 +85,7 @@ if __name__ == '__main__':
     # Set up train loop
     data_cycle = dataset.iter("train", cycle=True, shuffle=True)
     losses = []
-    iters = 5_000
-    pbar = range(iters) if not USE_TQDM else tqdm.trange(iters)
+    pbar = tqdm.trange(args.iterations)
     for it in pbar:
 
         # Reset grad
@@ -127,7 +97,7 @@ if __name__ == '__main__':
         # Forward pass
         pkg = model.render(cam, bg=bg)
         feat = pkg.additional_features.view(-1,num_classes)
-        loss = loss_fn(feat, cam.gt_image)
+        loss = loss_fn(feat, cam.gt_image.flatten())
 
         # Use alpha channel to account for areas with no splats
         loss = loss * pkg.alpha.flatten().detach()
@@ -140,21 +110,16 @@ if __name__ == '__main__':
         # Iter report
         losses.append(loss.item())
 
-        if it%50 == 0 or it == iters-1:
+        if it%50 == 0 or it == args.iterations-1:
             pkg = model.render(test_cam, bg=bg)
             feat = pkg.additional_features.argmax(dim=-1)
 
             feat_rgb = class_colors[feat % class_colors.shape[0]].permute(2,0,1)
             save_image(feat_rgb,f"renders/segmentation_latest.png")
 
-    # Lossplot
-    import matplotlib.pyplot as plt
-    plt.plot(losses)
-    plt.savefig("figure.png")
-
     # Save model
     out_dir = os.path.dirname(args.load_checkpoint)
-    path = os.path.join(out_dir, 'segmentation', f'iter_{iters}')
+    path = os.path.join(out_dir, 'segmentation', f'iter_{args.iterations}')
     os.makedirs(path, exist_ok=True)
     model.to_ply(path=path, overwrite=True)
     print("Saved model to",path)
