@@ -8,7 +8,7 @@ from src.utils import qvec2rotmat_np,image_path_to_tensor,focal2fov
 
 class DataSet:
     """
-    DataSet super class. Is mostly just a fancy wrapper for a list of
+    DataSet class. Is mostly just a fancy wrapper for a list of
     `Camera` instances.
 
     By default, `Camera` instances are split such that every 8th camera
@@ -106,8 +106,10 @@ class DataSet:
             source_path:str,
             cameras_file:str='cameras.json',
             images_folder:str='images',
+            image_format:str='RGB',
             rescale:int=1,
             device='cuda',
+            load_images:bool=True,
             data_folder=None,# IGNORED
             **kwargs,
         ) -> 'DataSet':
@@ -140,7 +142,15 @@ class DataSet:
                 camera = json.loads(line)
 
                 # Get ground truth image
-                I = image_path_to_tensor( os.path.join(source_path, images_folder, camera['image']), rescale=rescale)
+                I,H,W = None,None,None
+                if load_images:
+                    I = image_path_to_tensor(
+                        os.path.join(source_path, images_folder, camera['fname']),
+                        rescale=rescale,
+                        image_format=image_format
+                    )
+                else:
+                    H,W = 720,960
 
                 # Add Camera instance
                 cameras.append(Camera(
@@ -152,7 +162,8 @@ class DataSet:
                     cx_frac=camera['cx_frac'],
                     cy_frac=camera['cy_frac'],
                     gt_image=I,
-                    name=camera['image'],
+                    H=H,W=W,
+                    name=camera['fname'],
                     znear=1e-3
                 ))
 
@@ -173,6 +184,8 @@ class DataSet:
         ) -> None:
         """
         Initialize DataSet instance from a list of cameras
+
+        Raises AssertionError if the list of camera instance is empty
 
         Parameters:
         - `cameras:list[Camera]` A list of cameras to use
@@ -203,7 +216,7 @@ class DataSet:
 
     def __iter__(self):
         """
-        Iterate dataset
+        Iterate dataset, equivalent to `DataSet.iter('all')`
         """
         return self.iter(partition="all")
 
@@ -240,31 +253,3 @@ class DataSet:
 
             # Stop cycling
             if not cycle: break
-
-
-    def oneup_scale(self):
-        """
-        Update each camera's ground truth image with an image a scale higher than
-        the current.
-
-        For example, if the current scale is 8, it replaces all gt images with a
-        scale 4 version.
-        """
-        raise DeprecationWarning()
-        # Update current scale, with a fallback of scale 1
-        mapper = { 8:4, 4:2, 2:1, 1:1 }
-        self.current_scale = mapper.get(self.current_scale, 1)
-
-        # Rescale images to this scale
-        rescale = self.current_scale
-
-        # See if `[source_path]/[image_folder]_[scale]/` exists
-        images_folder = self.image_folder
-        newfolder = "{}_{}".format(images_folder.rstrip('/'), self.current_scale)
-        if os.path.isdir(newfolder):
-            # Use that folder instead, dont rescale images
-            images_folder = newfolder
-            rescale = 1
-
-        for cam in self.cameras:
-            cam.set_gt_image(image_path_to_tensor( os.path.join(images_folder, cam.name), rescale=rescale ))

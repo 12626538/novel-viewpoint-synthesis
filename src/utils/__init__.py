@@ -3,6 +3,7 @@ import numpy as np
 import math
 from PIL import Image
 from torchvision import transforms
+from torchvision.io import read_image
 
 def knn_scale(x:np.ndarray, k:int=3):
     """
@@ -71,23 +72,33 @@ def fov2focal(fov:float, pixels:int) -> float:
     return pixels / (2 * math.tan(fov / 2))
 
 
-def image_path_to_tensor(image_path:str, rescale:float=1) -> torch.Tensor:
+def image_path_to_tensor(
+        image_path:str,
+        rescale:float=1,
+        image_format:str='RGB',
+    ) -> torch.Tensor:
     """
     Read image to tensor
+
+    Read in `image_format`
+    - `RGB` (default): Returned tensor is of dtype float with values in [0,1]
+    - `seg` (for segmentation): Returned tensor is of dtype long with values in [0,255]
 
     Rescale by a factor 1/rescale if specified
 
     Output shape is C,H,W
     """
-    img = Image.open(image_path)
+    image_format = image_format.lower()
 
-    if rescale != 1:
-        img = img.resize((img.width//rescale, img.height//rescale))
+    img = read_image(image_path)
 
-    transform = transforms.ToTensor()
+    if image_format == 'rgb':
+        return img.float()/255
 
-    img_tensor = transform(img)
-    return img_tensor
+    if image_format == 'seg':
+        return img
+
+    raise ValueError(f"Unkown image format '{image_format}'")
 
 def qvec2rotmat(q:torch.Tensor) -> torch.Tensor:
     """
